@@ -354,32 +354,67 @@ def show_kanban():
                                     def show_rdms(_, n=num):
                                         rdms = fetch_rdms(n)
                                         dlg = ui.dialog()
+                                        # aumentar largura do diálogo para melhor visibilidade
+                                        dlg.classes("w-full max-w-6xl")
                                         with dlg:
-                                            ui.label(f"RDMs vinculadas ao atendimento {n}").classes("text-lg font-bold")
+                                            # título removido — diálogo exibirá apenas a lista e os totalizadores
                                             if not rdms:
                                                 ui.label("Nenhuma RDM encontrada").classes("text-sm text-gray-500")
                                             else:
-                                                for r in rdms:
-                                                    with ui.card().classes("mb-2 p-3"):
-                                                        # montar campos já sanitizados
-                                                        numrdm = sanitize_text(r.get('IdRdm') or '')
-                                                        desdob = sanitize_text(r.get('Desdobramento') or '')
-                                                        tipordm = sanitize_text(r.get('NomeTipoRDM') or '')
-                                                        situ = sanitize_text(r.get('SituacaoRDM') or '')
-                                                        reg = r.get('RegInclusao')
-                                                        data_str = format_datetime(reg)
-                                                        desc = sanitize_text(r.get('Descricao') or '')
+                                                # ordenar pelas datas de abertura (RegInclusao) - mais antigas primeiro
+                                                try:
+                                                    rdms_sorted = sorted(rdms, key=lambda x: x.get('RegInclusao') or datetime.max, reverse=False)
+                                                except Exception:
+                                                    rdms_sorted = rdms
 
-                                                        # usar markdown para labels em negrito e quebras claras
-                                                        md = (
-                                                            f"**Nº:** {numrdm} / {desdob}\n\n"
-                                                            f"**Tipo de RDM:** {tipordm}\n\n"
-                                                            f"**Situação:** {situ}\n\n"
-                                                            f"**Abertura:** {data_str}\n\n"
-                                                            f"**Descrição:** {desc}"
-                                                        )
-                                                        ui.markdown(md)
-                                            ui.button("Fechar", on_click=lambda _: dlg.close())
+                                                # calcular totalizadores por tipo e por situação
+                                                totals_by_tipo = {}
+                                                totals_by_situacao = {}
+                                                for r in rdms_sorted:
+                                                    tipo = (r.get('NomeTipoRDM') or '').strip() or 'N/A'
+                                                    sit = (r.get('SituacaoRDM') or '').strip() or 'N/A'
+                                                    totals_by_tipo[tipo] = totals_by_tipo.get(tipo, 0) + 1
+                                                    totals_by_situacao[sit] = totals_by_situacao.get(sit, 0) + 1
+
+                                                # lista detalhada de RDMs em uma única coluna/form para melhor legibilidade
+                                                # envolver a lista em uma linha centralizada para garantir alinhamento correto
+                                                with ui.row().classes("w-full justify-center"):
+                                                    with ui.column().classes("w-full max-w-4xl").style("overflow:auto; max-height:60vh;padding-right:8px;"):
+                                                        for r in rdms_sorted:
+                                                            with ui.card().classes("mb-2 p-3 w-full"):
+                                                                numrdm = sanitize_text(r.get('IdRdm') or '')
+                                                                desdob = sanitize_text(r.get('Desdobramento') or '')
+                                                                tipordm = sanitize_text(r.get('NomeTipoRDM') or '')
+                                                                situ = sanitize_text(r.get('SituacaoRDM') or '')
+                                                                reg = r.get('RegInclusao')
+                                                                data_str = format_datetime(reg)
+                                                                desc = sanitize_text(r.get('Descricao') or '')
+
+                                                                md = (
+                                                                    f"**Nº:** {numrdm} / {desdob}\n\n"
+                                                                    f"**Tipo de RDM:** {tipordm}\n\n"
+                                                                    f"**Situação:** {situ}\n\n"
+                                                                    f"**Abertura:** {data_str}\n\n"
+                                                                    f"**Descrição:** {desc}"
+                                                                )
+                                                                ui.markdown(md)
+
+                                                # exibir totalizadores ao final: por tipo e por situação (bloco com fundo branco)
+                                                # totalizadores centralizados com largura limitada para manter alinhamento em telas grandes
+                                                with ui.row().classes("w-full mt-4 justify-center"):
+                                                    with ui.card().classes("mx-auto w-full max-w-3xl").style("background:#ffffff;padding:12px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.08);"):
+                                                        with ui.row().classes("w-full gap-8 items-start"):
+                                                            with ui.column().classes("w-1/2"):
+                                                                ui.markdown("**Total por Tipo de RDM:**\n\n")
+                                                                for tipo, cnt in sorted(totals_by_tipo.items(), key=lambda i: (-i[1], i[0])):
+                                                                    ui.markdown(f"- **{tipo}**: {cnt}")
+                                                            with ui.column().classes("w-1/2"):
+                                                                ui.markdown("**Total por Situação de RDM:**\n\n")
+                                                                for sit, cnt in sorted(totals_by_situacao.items(), key=lambda i: (-i[1], i[0])):
+                                                                    ui.markdown(f"- **{sit}**: {cnt}")
+                                                # botão de fechar centralizado abaixo dos totais
+                                                with ui.row().classes("w-full mt-4 justify-center"):
+                                                    ui.button("Fechar", on_click=lambda _: dlg.close()).classes("primary")
                                         dlg.open()
 
                                     ui.button("RDMs", on_click=show_rdms).classes("secondary")
