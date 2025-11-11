@@ -70,6 +70,7 @@ SELECT
     A.NumAtendimento,
     A.AssuntoAtendimento,
     A.RegInclusao AS Abertura,
+    A.DataProxContato,
     A.CodCliente,
     C.NomeCliente,
     A.Situacao,
@@ -77,11 +78,13 @@ SELECT
         SELECT MAX(I2.RegInclusao)
         FROM AtendimentoIteracao I2 WITH (NOLOCK)
         WHERE I2.NumAtendimento = A.NumAtendimento
+          AND I2.Desdobramento = 0
     ) AS UltimaIteracao,
     (
         SELECT TOP 1 CONVERT(NVARCHAR(MAX), I3.TextoIteracao)
         FROM AtendimentoIteracao I3 WITH (NOLOCK)
         WHERE I3.NumAtendimento = A.NumAtendimento
+          AND I3.Desdobramento = 0
         ORDER BY I3.NumIteracao DESC
     ) AS TextoIteracao
 FROM CNSAtendimento A WITH (NOLOCK)
@@ -133,7 +136,8 @@ def fetch_latest_iteration(num_atendimento):
     SELECT TOP 1 AI.NumIteracao, AI.DataIteracao, AI.HoraIteracao, AI.TextoIteracao, U.NomeUsuario
     FROM AtendimentoIteracao AI WITH (NOLOCK)
     LEFT JOIN Usuarios U WITH (NOLOCK) ON AI.CodUsuario = U.CodUsuario
-    WHERE AI.NumAtendimento = ?
+        WHERE AI.NumAtendimento = ?
+            AND AI.Desdobramento = 0
     ORDER BY AI.NumIteracao DESC
     """
     cur.execute(sql, (num_atendimento,))
@@ -201,9 +205,10 @@ def fetch_rdms(num_atendimento):
                 r['Descricao'] = normalize_description(r['Descricao'])
             except Exception:
                 r['Descricao'] = sanitize_text(r.get('Descricao') or '')
-            # sanitizar Desdobramento (normalmente texto simples)
+            # sanitizar Desdobramento (preservar 0 em vez de transformá-lo em string vazia)
             try:
-                r['Desdobramento'] = sanitize_text(r.get('Desdobramento') or '')
+                desdob_raw = r.get('Desdobramento')
+                r['Desdobramento'] = sanitize_text(desdob_raw) if desdob_raw is not None else ''
             except Exception:
                 r['Desdobramento'] = ''
             # sanitizar situação legível da RDM
@@ -253,35 +258,47 @@ footer.add_slot('info', f"<span>{APP_NAME} — v{APP_VERSION}</span>")
 def show_login():
     root.clear()
     with root:
-        ui.markdown(f"## {APP_NAME} — Login")
-        username = ui.input("Usuário").classes("w-96").props("autofocus")
-        password = ui.input("Senha", password=True).classes("w-96")
-        message = ui.label("")
+        # centralizar o formulário de login
+        # centralizar horizontal e verticalmente (ocupando a altura da viewport)
+        with ui.row().classes("w-full h-screen items-center justify-center"):
+            with ui.column().classes("items-center w-full max-w-sm gap-2"):
+                # cartão com fundo e sombra ao redor do formulário para destaque
+                with ui.card().classes("w-full p-6 rounded shadow-md").style("background:#ffffff;"):
+                    ui.markdown(f"## {APP_NAME} — Login").classes("text-center")
+                    # inputs responsivos para caberem dentro do cartão
+                    username = ui.input("Usuário").classes("w-full").props("autofocus")
+                    password = ui.input("Senha", password=True).classes("w-full")
+                    message = ui.label("").classes("text-sm text-red-600")
 
-        def do_login():
-            user = verify_user(username.value, password.value)
-            if user:
-                logged_user.update(user)
-                ui.notify(f"Bem-vindo, {user['NomeUsuario']}!")
-                show_kanban()
-            else:
-                message.set_text("Usuário ou senha inválidos")
+                    def do_login():
+                        user = verify_user(username.value, password.value)
+                        if user:
+                            logged_user.update(user)
+                            ui.notify(f"Bem-vindo, {user['NomeUsuario']}!")
+                            show_kanban()
+                        else:
+                            message.set_text("Usuário ou senha inválidos")
 
-        ui.button("Entrar", on_click=lambda _: do_login())
+                    # centraliza o botão dentro do cartão
+                    with ui.row().classes("w-full justify-center mt-2"):
+                        ui.button("Entrar", on_click=lambda _: do_login()).classes("primary")
     # footer já criado no nível do módulo
 
 def show_kanban():
     root.clear()
     with root:
-        ui.label(f"🗂️ {sanitize_text(APP_NAME)} — {sanitize_text(logged_user.get('NomeUsuario', ''))}").classes("text-2xl mb-2 font-bold")
-        ui.button("Logout", on_click=lambda _: show_login()).classes("secondary")
-
-        board = ui.row().classes("w-full gap-4 items-start").style("overflow-x: auto;")
+        # cabeçalho: título + contador de cards (à esquerda) e botão Logout (canto direito)
         cards_data = fetch_kanban_cards()
         # debug console log to help verify how many rows were fetched for the Kanban
         print(f"[DEBUG] show_kanban: {len(cards_data)} cards loaded")
-        # debug: mostrar contagem de cards
-        ui.label(f"{len(cards_data)} cards carregados").classes("text-sm text-gray-500 mb-2")
+        with ui.row().classes("w-full items-start mb-2 justify-between"):
+            with ui.column().classes("items-start"):
+                ui.label(f"🗂️ {sanitize_text(APP_NAME)} — {sanitize_text(logged_user.get('NomeUsuario', ''))}").classes("text-2xl font-bold")
+                ui.label(f"{len(cards_data)} cards carregados").classes("text-sm text-gray-500")
+            # botão de logout posicionado à direita do cabeçalho
+            ui.button("Logout", on_click=lambda _: show_login()).classes("secondary")
+
+        board = ui.row().classes("w-full gap-4 items-start").style("overflow-x: auto;")
 
         # Colocar todos os cards inicialmente na coluna "A iniciar"
         column_cards = {name: [] for (name, _, _) in COLUMNS}
@@ -294,7 +311,7 @@ def show_kanban():
             with board:
                 for col_name, bg_color, situ_code in COLUMNS:
                     with ui.column().classes("w-72").style("min-width: 18rem;"):
-                        ui.label(col_name).classes("text-md font-semibold p-2 rounded").style(f"background:{bg_color};")
+                        ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(f"background:{bg_color};")
                         # Render cards with a select + button mover (compatível com versões sem drop_zone)
                         def format_datetime(value):
                             """Normaliza diferentes formatos de entrada e retorna YYYY-MM-DD HH:MM:SS.
@@ -350,14 +367,90 @@ def show_kanban():
                                     # header: cliente + id
                                     with ui.row().classes("items-center justify-between w-full"):
                                         ui.label(cliente).classes("font-semibold text-lg")
-                                        ui.label(f"#{num}").classes("text-sm text-gray-600 ml-2")
-                                # assunto
-                                ui.label(assunto).classes("text-sm mt-1 mb-1")
+                                        # calcular dias em aberto a partir de Abertura (RegInclusao)
+                                        abertura_val = card.get("Abertura")
+                                        def _parse_date(v):
+                                            if v is None:
+                                                return None
+                                            if isinstance(v, datetime):
+                                                return v
+                                            try:
+                                                if isinstance(v, bytes):
+                                                    s = v.decode(errors='ignore')
+                                                else:
+                                                    s = str(v)
+                                                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                                                    try:
+                                                        return datetime.strptime(s, fmt)
+                                                    except Exception:
+                                                        continue
+                                            except Exception:
+                                                return None
+                                            return None
+
+                                        dt_abertura = _parse_date(abertura_val)
+                                        days_open = None
+                                        try:
+                                            if dt_abertura:
+                                                days_open = (datetime.now() - dt_abertura).days
+                                        except Exception:
+                                            days_open = None
+
+                                        # mostrar id e dias em aberto (dias em vermelho e negrito)
+                                        with ui.row().classes("items-center"):
+                                            ui.label(f"#{num}").classes("text-sm text-gray-600 ml-2")
+                                            if days_open is not None:
+                                                # cor azul quando <= 120 dias, vermelho quando > 120 dias
+                                                try:
+                                                    color_class = "text-blue-600" if int(days_open) <= 120 else "text-red-600"
+                                                except Exception:
+                                                    color_class = "text-red-600"
+                                                lbl = ui.label(f"Aberto há {days_open} dias").classes(f"text-sm font-bold {color_class} ml-3")
+                                                # tooltip com a data de abertura no formato dd/mm/aaaa
+                                                try:
+                                                    if dt_abertura:
+                                                        ui.tooltip(lbl, f"Data de abertura: {dt_abertura.strftime('%d/%m/%Y')}")
+                                                except Exception:
+                                                    pass
+                                # mostrar Próximo contato no lugar do assunto (ocupando a mesma linha)
+                                prox_val = card.get("DataProxContato")
+                                dt_prox = None
+                                try:
+                                    dt_prox = _parse_date(prox_val)
+                                except Exception:
+                                    dt_prox = None
+
+                                if dt_prox:
+                                    try:
+                                        prox_date_str = dt_prox.strftime("%d/%m/%Y")
+                                    except Exception:
+                                        prox_date_str = sanitize_text(str(prox_val))
+                                else:
+                                    prox_date_str = "-"
+
+                                # determinar cor: vermelho (passado), preto (hoje), azul (futuro)
+                                prox_color = "text-gray-500"
+                                try:
+                                    if dt_prox:
+                                        today = datetime.now().date()
+                                        pd = dt_prox.date()
+                                        if pd < today:
+                                            prox_color = "text-red-600"
+                                        elif pd == today:
+                                            prox_color = "text-black"
+                                        else:
+                                            prox_color = "text-blue-600"
+                                except Exception:
+                                    prox_color = "text-gray-500"
+
+                                ui.label(f"Próximo contato: {prox_date_str}").classes(f"text-sm {prox_color} mt-1 mb-1")
                                 # última interação
                                 ui.label(f"Última interação: {ultima}").classes("text-xs text-gray-500 mb-2")
-                                # trecho do texto da última iteração
+                                    # trecho do texto da última iteração
                                 if snippet:
                                     ui.label(snippet).classes("text-sm text-gray-700 mb-2")
+
+                                    
 
                                 with ui.row().classes("items-center gap-2"):
                                     # mostra analista (última iteração) e botões para histórico e RDMs
@@ -399,7 +492,9 @@ def show_kanban():
                                                         for r in rdms_sorted:
                                                             with ui.card().classes("mb-2 p-3 w-full"):
                                                                 numrdm = sanitize_text(r.get('IdRdm') or '')
-                                                                desdob = sanitize_text(r.get('Desdobramento') or '')
+                                                                # mostrar 0 quando Desdobramento for 0 (evitar falsy '' quando o valor é 0)
+                                                                desdob_raw = r.get('Desdobramento')
+                                                                desdob = sanitize_text(desdob_raw) if desdob_raw is not None else ''
                                                                 tipordm = sanitize_text(r.get('NomeTipoRDM') or '')
                                                                 situ = sanitize_text(r.get('SituacaoRDM') or '')
                                                                 reg = r.get('RegInclusao')
