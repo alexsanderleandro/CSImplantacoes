@@ -1,0 +1,183 @@
+NiceGUI ready to go on http://localhost:8888, http://172.25.80.1:8888, and http://192.168.0.159:8888
+WARNING:  WatchFiles detected changes in 'debug_fetch_snippets.py'. Reloading...
+ WARNING:  WatchFiles detected changes in 'debug_fetch_snippets.py'. Reloading...
+ Traceback (most recent call last):
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 330, in _wmi_query
+    data = _wmi.exec_query("SELECT {} FROM {}".format(
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        ",".join(keys),
+        ^^^^^^^^^^^^^^^
+        table,
+        ^^^^^^
+    )).split("\0")
+    ^^
+TimeoutError: [WinError 258] O tempo limite de espera foi atingido
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(parent_pid=49156, pipe_handle=1212)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\multiprocessing\spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\multiprocessing\spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\multiprocessing\spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\multiprocessing\spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "c:\Users\alex\Documents\Python\CSImplantações\main.py", line 2, in <module>
+    from nicegui import ui, app
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\nicegui\__init__.py", line 1, in <module>
+    from . import binding, elements, html, run, storage, ui
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\nicegui\binding.py", line 15, in <module>
+    from . import core
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\nicegui\core.py", line 6, in <module>
+    from socketio import AsyncServer
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\socketio\__init__.py", line 1, in <module>
+    from .client import Client
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\socketio\client.py", line 3, in <module>
+    import engineio
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\engineio\__init__.py", line 5, in <module>
+    from .async_client import AsyncClient
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\engineio\async_client.py", line 7, in <module>
+    import aiohttp
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\__init__.py", line 6, in <module>
+    from .client import (
+    ...<42 lines>...
+    )
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\client.py", line 40, in <module>
+    from . import hdrs, http, payload
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\http.py", line 7, in <module>
+    from .http_parser import (
+    ...<6 lines>...
+    )
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\http_parser.py", line 28, in <module>
+    from .base_protocol import BaseProtocol
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\base_protocol.py", line 5, in <module>
+    from .helpers import set_exception
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\helpers.py", line 65, in <module>
+    IS_MACOS = platform.system() == "Darwin"
+               ~~~~~~~~~~~~~~~^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 1073, in system
+    return uname().system
+           ~~~~~^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 999, in uname
+    release, version, csd, ptype = win32_ver()
+                                   ~~~~~~~~~^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 450, in win32_ver
+    version, csd, ptype, is_client = _win32_ver(version, csd, ptype)
+                                     ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 391, in _win32_ver
+    (version, product_type, ptype, spmajor, spminor)  = _wmi_query(
+                                                        ~~~~~~~~~~^
+        'OS',
+        ^^^^^
+    ...<4 lines>...
+        'ServicePackMinorVersion',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 336, in _wmi_query
+    raise OSError("not supported")
+          ~~~~~~~^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
+NiceGUI ready to go on http://localhost:8888, http://172.25.80.1:8888, and http://192.168.0.159:8888
+WARNING:  WatchFiles detected changes in 'main.py'. Reloading...
+ WARNING:  WatchFiles detected changes in 'debug_fetch_snippets.py'. Reloading...
+ Traceback (most recent call last):
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 330, in _wmi_query
+    data = _wmi.exec_query("SELECT {} FROM {}".format(
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        ",".join(keys),
+        ^^^^^^^^^^^^^^^
+        table,
+        ^^^^^^
+    )).split("\0")
+    ^^
+TimeoutError: [WinError 258] O tempo limite de espera foi atingido
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    from multiprocessing.spawn import spawn_main; spawn_main(parent_pid=49156, pipe_handle=1208)
+                                                  ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\multiprocessing\spawn.py", line 122, in spawn_main
+    exitcode = _main(fd, parent_sentinel)
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\multiprocessing\spawn.py", line 131, in _main
+    prepare(preparation_data)
+    ~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\multiprocessing\spawn.py", line 246, in prepare
+    _fixup_main_from_path(data['init_main_from_path'])
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\multiprocessing\spawn.py", line 297, in _fixup_main_from_path
+    main_content = runpy.run_path(main_path,
+                                  run_name="__mp_main__")
+  File "<frozen runpy>", line 287, in run_path
+  File "<frozen runpy>", line 98, in _run_module_code
+  File "<frozen runpy>", line 88, in _run_code
+  File "c:\Users\alex\Documents\Python\CSImplantações\main.py", line 2, in <module>
+    from nicegui import ui, app
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\nicegui\__init__.py", line 1, in <module>
+    from . import binding, elements, html, run, storage, ui
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\nicegui\binding.py", line 15, in <module>
+    from . import core
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\nicegui\core.py", line 6, in <module>
+    from socketio import AsyncServer
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\socketio\__init__.py", line 1, in <module>
+    from .client import Client
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\socketio\client.py", line 3, in <module>
+    import engineio
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\engineio\__init__.py", line 5, in <module>
+    from .async_client import AsyncClient
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\engineio\async_client.py", line 7, in <module>
+    import aiohttp
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\__init__.py", line 6, in <module>
+    from .client import (
+    ...<42 lines>...
+    )
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\client.py", line 40, in <module>
+    from . import hdrs, http, payload
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\http.py", line 7, in <module>
+    from .http_parser import (
+    ...<6 lines>...
+    )
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\http_parser.py", line 28, in <module>
+    from .base_protocol import BaseProtocol
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\base_protocol.py", line 5, in <module>
+    from .helpers import set_exception
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\site-packages\aiohttp\helpers.py", line 65, in <module>
+    IS_MACOS = platform.system() == "Darwin"
+               ~~~~~~~~~~~~~~~^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 1073, in system
+    return uname().system
+           ~~~~~^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 999, in uname
+    release, version, csd, ptype = win32_ver()
+                                   ~~~~~~~~~^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 450, in win32_ver
+    version, csd, ptype, is_client = _win32_ver(version, csd, ptype)
+                                     ~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 391, in _win32_ver
+    (version, product_type, ptype, spmajor, spminor)  = _wmi_query(
+                                                        ~~~~~~~~~~^
+        'OS',
+        ^^^^^
+    ...<4 lines>...
+        'ServicePackMinorVersion',
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "C:\Users\alex\AppData\Local\Programs\Python\Python313\Lib\platform.py", line 336, in _wmi_query
+    raise OSError("not supported")
+          ~~~~~~~^^^^^^^^^^^^^^^^^
+KeyboardInterrupt
+NiceGUI ready to go on http://localhost:8888, http://172.25.80.1:8888, and http://192.168.0.159:8888
