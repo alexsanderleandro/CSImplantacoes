@@ -297,24 +297,40 @@ def show_kanban():
                         ui.label(col_name).classes("text-md font-semibold p-2 rounded").style(f"background:{bg_color};")
                         # Render cards with a select + button mover (compatível com versões sem drop_zone)
                         def format_datetime(value):
+                            """Normaliza diferentes formatos de entrada e retorna YYYY-MM-DD HH:MM:SS.
+
+                            Aceita datetime, bytes ou strings em formatos comuns e tenta extrair
+                            uma representação consistente com segundos.
+                            """
                             if value is None:
                                 return "-"
+                            # datetime já formatado
                             if isinstance(value, datetime):
-                                return value.strftime("%d/%m/%Y %H:%M")
+                                return value.strftime("%Y-%m-%d %H:%M:%S")
                             try:
                                 if isinstance(value, bytes):
                                     s = value.decode(errors='ignore')
                                 else:
                                     s = str(value)
-                                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S"):
+                                # tentar vários formatos conhecidos
+                                for fmt in (
+                                    "%Y-%m-%d %H:%M:%S.%f",
+                                    "%Y-%m-%d %H:%M:%S",
+                                    "%Y-%m-%d %H:%M",
+                                    "%Y-%m-%d",
+                                    "%d/%m/%Y %H:%M:%S",
+                                    "%d/%m/%Y %H:%M",
+                                    "%d/%m/%Y",
+                                ):
                                     try:
                                         dt = datetime.strptime(s, fmt)
-                                        return dt.strftime("%d/%m/%Y %H:%M")
+                                        return dt.strftime("%Y-%m-%d %H:%M:%S")
                                     except Exception:
                                         continue
-                                return s
+                                # se não foi possível parsear, retornar a string sanitizada
+                                return sanitize_text(s)
                             except Exception:
-                                return str(value)
+                                return sanitize_text(str(value))
 
                         for card in column_cards.get(col_name, []):
                             num = card.get("NumAtendimento")
@@ -450,14 +466,110 @@ def show_kanban():
 
     def show_history_dialog(num_atendimento):
         hist = fetch_history(num_atendimento)
+        # ordenar por DataIteracao asc e HoraIteracao asc quando possível
+        def _make_dt(h):
+            try:
+                d = h.get('DataIteracao')
+                t = h.get('HoraIteracao')
+                # se já for datetime
+                if isinstance(d, datetime):
+                    date_part = d
+                else:
+                    # tentar converter string para date
+                    try:
+                        date_part = datetime.strptime(str(d), "%Y-%m-%d")
+                    except Exception:
+                        try:
+                            date_part = datetime.strptime(str(d), "%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            date_part = datetime.min
+                # hora pode ser string hh:mm:ss
+                if t:
+                    try:
+                        if isinstance(t, str):
+                            time_part = datetime.strptime(t, "%H:%M:%S").time()
+                        else:
+                            time_part = t
+                    except Exception:
+                        time_part = None
+                else:
+                    time_part = None
+                if time_part:
+                    return datetime.combine(date_part.date(), time_part)
+                return date_part
+            except Exception:
+                return datetime.min
+
+        try:
+            hist_sorted = sorted(hist, key=_make_dt)
+        except Exception:
+            hist_sorted = hist
+
         dlg = ui.dialog()
         with dlg:
-            ui.label(f"Histórico do atendimento {num_atendimento}").classes("text-lg font-bold")
-            for h in hist:
-                with ui.card().classes("mb-2 p-2"):
-                    ui.label(f"{sanitize_text(h.get('DataIteracao'))} {sanitize_text(h.get('HoraIteracao'))} — {sanitize_text(h.get('NomeUsuario'))}").classes("text-sm")
-                    ui.markdown(sanitize_text(limpar_rtf(h.get("TextoIteracao") or "")))
-            ui.button("Fechar", on_click=lambda _: dlg.close())
+            # centralizar conteúdo do histórico em lista com largura limitada
+            with ui.row().classes("w-full justify-center"):
+                with ui.column().classes("w-full max-w-4xl"):
+                    # título removido pelo usuário: não exibir label de cabeçalho
+                    for h in hist_sorted:
+                        usuario = sanitize_text(h.get('NomeUsuario') or '-')
+                        texto = sanitize_text(limpar_rtf(h.get('TextoIteracao') or ""))
+
+                        def _format_dt(d, t):
+                            # tenta montar um datetime a partir de DataIteracao (data) e HoraIteracao (hora)
+                            # lida com casos em que HoraIteracao vem como '1900-01-01 12:50:52' e DataIteracao como '2025-10-17 00:00:00'
+                            try:
+                                # parse da parte de data
+                                date_part = None
+                                if isinstance(d, datetime):
+                                    date_part = d
+                                else:
+                                    s = str(d) if d is not None else ''
+                                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                                        try:
+                                            date_part = datetime.strptime(s, fmt)
+                                            break
+                                        except Exception:
+                                            continue
+                                if date_part is None:
+                                    date_part = datetime.min
+
+                                # parse da parte de hora — aceitar tanto 'HH:MM:SS' quanto um datetime completo com data (ex.: 1900-01-01 12:50:52)
+                                time_part = None
+                                if isinstance(t, datetime):
+                                    time_part = t.time()
+                                elif t:
+                                    ts = str(t)
+                                    for fmt in ("%H:%M:%S", "%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                                        try:
+                                            parsed = datetime.strptime(ts, fmt)
+                                            # se o formato incluiu data, extrair a hora
+                                            time_part = parsed.time()
+                                            break
+                                        except Exception:
+                                            continue
+
+                                # construir datetime final: usar a data de date_part e a hora de time_part quando disponível
+                                if time_part:
+                                    combined = datetime.combine(date_part.date(), time_part)
+                                else:
+                                    combined = date_part
+
+                                # retornar no formato pedido (YYYY-MM-DD HH:MM:SS)
+                                return combined.strftime("%Y-%m-%d %H:%M:%S")
+                            except Exception:
+                                return f"{sanitize_text(d)} {sanitize_text(t)}"
+
+                        data_str = _format_dt(h.get('DataIteracao'), h.get('HoraIteracao'))
+
+                        # cartão por iteração com labels em negrito
+                        with ui.card().classes("mb-2 p-3 w-full"):
+                            ui.markdown(f"**Data/Hora:** {data_str}  \n\n **Usuário:** {usuario}")
+                            # descrição em markdown (texto limpo)
+                            ui.markdown(texto)
+                    # botão fechar centralizado
+                    with ui.row().classes("w-full justify-center mt-4"):
+                        ui.button("Fechar", on_click=lambda _: dlg.close()).classes("primary")
         dlg.open()
 
     render_board()
