@@ -30,6 +30,27 @@ def sanitize_text(value: object) -> str:
     cleaned = ''.join(ch for ch in s if not (0xD800 <= ord(ch) <= 0xDFFF))
     return cleaned
 
+
+def normalize_description(s: str) -> str:
+    """Limpa ruídos típicos deixados pela conversão de RTF:
+
+    - remove bookmarks/labels repetidos como DESCRICAO, DESCRICAO_TAREFA
+    - colapsa sequências de pontuação/espacos (ex: ".; ; .; ;")
+    - remove palavras adjacentes duplicadas (ex: "DESCRICAO DESCRICAO" -> "DESCRICAO")
+    """
+    import re
+    if not s:
+        return ""
+    # remover tokens de bookmark/marcadores comuns
+    s = re.sub(r"\b(?:DESCRICAO_TAREFA|DESCRICAOTAREFA|DESCRICAO|_dx_frag_StartFragment|_dx_frag_EndFragment)\b", "", s, flags=re.IGNORECASE)
+    # colapsar sequências de pontuação e espaços (ex: ".; ; .; ;") em um único espaço
+    s = re.sub(r"[\.\;,:\-_/\\\s]{2,}", " ", s)
+    # remover repetições adjacentes de uma mesma palavra
+    s = re.sub(r"\b(\w+)(?:\s+\1\b)+", r"\1", s, flags=re.IGNORECASE)
+    # colapsar espaços múltiplos e trim
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
 # ---------- Configurações Kanban ----------
 COLUMNS = [
     ("A iniciar", "#d1d5db", 100),
@@ -132,10 +153,70 @@ def fetch_rdms(num_atendimento):
     conn = get_db_connection()
     cur = conn.cursor()
     try:
-        cur.execute("SELECT IdRdm, NumAtendimento, Descricao, RegInclusao FROM CnsRDM WITH (NOLOCK) WHERE NumAtendimento = ? ORDER BY RegInclusao DESC", (num_atendimento,))
+        # Ajuste: nomes das colunas reais na tabela CnsRDM são diferentes
+        # Selecionamos colunas existentes e as aliasamos para manter a API usada pela UI
+        cur.execute(
+            "SELECT NumRDM AS IdRdm, NumAtendimento, Desdobramento, NomeTipoRDM, DescricaoRDM AS Descricao, RegInclusao, "
+            "CASE "
+            "WHEN Situacao = 0 THEN 'Priorizar' "
+            "WHEN Situacao = 1 THEN 'Executando' "
+            "WHEN Situacao = 2 THEN 'Aguardando' "
+            "WHEN Situacao = 3 THEN 'Concluída' "
+            "WHEN Situacao = 4 THEN 'Cancelada' "
+            "WHEN Situacao = 5 THEN 'Verificar' "
+            "WHEN Situacao = 6 THEN 'Validar' "
+            "WHEN Situacao = 7 THEN 'Enfileirada' "
+            "WHEN Situacao = 8 THEN 'Testando' "
+            "WHEN Situacao = 9 THEN 'Verificar' "
+            "WHEN Situacao = 10 THEN 'Contatar cliente' "
+            "WHEN Situacao = 11 THEN 'Aguardando correção' "
+            "WHEN Situacao = 12 THEN 'Verificar' "
+            "WHEN Situacao = 13 THEN 'Verificar' "
+            "WHEN Situacao = 14 THEN 'Verificar' "
+            "WHEN Situacao = 15 THEN 'Verificar' "
+            "WHEN Situacao = 16 THEN 'Verificar' "
+            "WHEN Situacao = 17 THEN 'Efetuar merge' "
+            "WHEN Situacao = 18 THEN 'Liberação pendente' "
+            "WHEN Situacao = 19 THEN 'Verificar' "
+            "WHEN Situacao = 20 THEN 'Revisando testes' "
+            "WHEN Situacao = 21 THEN 'Verificar' "
+            "WHEN Situacao = 22 THEN 'Verificar' "
+            "WHEN Situacao = 23 THEN 'Aguardando (setor de testes)' "
+            "WHEN Situacao = 24 THEN 'Em edição' "
+            "WHEN Situacao = 25 THEN 'Validação técnica' "
+            "END AS SituacaoRDM "
+            "FROM CnsRDM WITH (NOLOCK) WHERE NumAtendimento = ? ORDER BY RegInclusao DESC",
+            (num_atendimento,)
+        )
         cols = [c[0] for c in cur.description]
         rows = cur.fetchall()
-        return [dict(zip(cols, row)) for row in rows]
+        result = [dict(zip(cols, row)) for row in rows]
+        # Limpa textos RTF das RDMs (semelhante ao tratamento das interações)
+        for r in result:
+            try:
+                # Limpa e sanitiza descrição (pode vir em RTF)
+                raw = r.get('Descricao') or ''
+                r['Descricao'] = sanitize_text(limpar_rtf(raw))
+                # remover ruídos e marcações repetidas deixadas pela conversão RTF
+                r['Descricao'] = normalize_description(r['Descricao'])
+            except Exception:
+                r['Descricao'] = sanitize_text(r.get('Descricao') or '')
+            # sanitizar Desdobramento (normalmente texto simples)
+            try:
+                r['Desdobramento'] = sanitize_text(r.get('Desdobramento') or '')
+            except Exception:
+                r['Desdobramento'] = ''
+            # sanitizar situação legível da RDM
+            try:
+                r['SituacaoRDM'] = sanitize_text(r.get('SituacaoRDM') or '')
+            except Exception:
+                r['SituacaoRDM'] = ''
+            # sanitizar NomeTipoRDM
+            try:
+                r['NomeTipoRDM'] = sanitize_text(r.get('NomeTipoRDM') or '')
+            except Exception:
+                r['NomeTipoRDM'] = ''
+        return result
     except Exception:
         return []
     finally:
@@ -279,9 +360,25 @@ def show_kanban():
                                                 ui.label("Nenhuma RDM encontrada").classes("text-sm text-gray-500")
                                             else:
                                                 for r in rdms:
-                                                    with ui.card().classes("mb-2 p-2"):
-                                                        ui.label(f"ID: {r.get('IdRdm')} — {r.get('Descricao')}").classes("text-sm")
-                                                        ui.label(f"Data: {r.get('RegInclusao')}").classes("text-xs text-gray-500")
+                                                    with ui.card().classes("mb-2 p-3"):
+                                                        # montar campos já sanitizados
+                                                        numrdm = sanitize_text(r.get('IdRdm') or '')
+                                                        desdob = sanitize_text(r.get('Desdobramento') or '')
+                                                        tipordm = sanitize_text(r.get('NomeTipoRDM') or '')
+                                                        situ = sanitize_text(r.get('SituacaoRDM') or '')
+                                                        reg = r.get('RegInclusao')
+                                                        data_str = format_datetime(reg)
+                                                        desc = sanitize_text(r.get('Descricao') or '')
+
+                                                        # usar markdown para labels em negrito e quebras claras
+                                                        md = (
+                                                            f"**Nº:** {numrdm} / {desdob}\n\n"
+                                                            f"**Tipo de RDM:** {tipordm}\n\n"
+                                                            f"**Situação:** {situ}\n\n"
+                                                            f"**Abertura:** {data_str}\n\n"
+                                                            f"**Descrição:** {desc}"
+                                                        )
+                                                        ui.markdown(md)
                                             ui.button("Fechar", on_click=lambda _: dlg.close())
                                         dlg.open()
 
