@@ -1,10 +1,20 @@
 # main.py
-from nicegui import ui, app
+# Adiar import de nicegui para evitar efeitos colaterais durante import/module load
+# (ex.: leitura do registro no Windows feita por algumas libs). As variáveis serão
+# inicializadas em start_app().
+ui = None
+app = None
 from authentication import verify_user, get_db_connection
-from rtf_utils import limpar_rtf
+from rtf_utils import limpar_rtf, extract_first_image_from_rtf
+import re
 import os
+import hashlib
+from pathlib import Path
+import time
+import threading
 from version import APP_NAME, APP_VERSION
 import pyodbc
+import base64
 from datetime import datetime
 
 
@@ -247,15 +257,125 @@ def update_situacao_on_move(num_atendimento, new_situacao_code):
 # ---------- UI ----------
 logged_user = {"CodUsuario": None, "NomeUsuario": None}
 
-# contêiner raiz para trocar views
-root = ui.element('div').classes("w-full p-4")
+# contêiner raiz para trocar views (inicializado no start_app)
+root = None
 
-# footer de página (top-level) com informação da versão
-footer = ui.footer()
-footer.add_slot('info', f"<span>{APP_NAME} — v{APP_VERSION}</span>")
+# diretório para armazenar imagens extraídas em cache
+CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache_images')
+os.makedirs(CACHE_DIR, exist_ok=True)
+# TTL do cache em dias (pode ser alterado via variável de ambiente CACHE_TTL_DAYS)
+try:
+    CACHE_TTL_DAYS = int(os.getenv('CACHE_TTL_DAYS', '30'))
+except Exception:
+    CACHE_TTL_DAYS = 30
+
+def clean_cache():
+    """Remove arquivos do cache mais antigos que CACHE_TTL_DAYS (baseado em mtime)."""
+    try:
+        now = time.time()
+        ttl_seconds = CACHE_TTL_DAYS * 24 * 3600
+        removed = 0
+        for fname in os.listdir(CACHE_DIR):
+            full = os.path.join(CACHE_DIR, fname)
+            try:
+                if not os.path.isfile(full):
+                    continue
+                mtime = os.path.getmtime(full)
+                age = now - mtime
+                if age > ttl_seconds:
+                    try:
+                        os.remove(full)
+                        removed += 1
+                    except Exception:
+                        pass
+            except Exception:
+                continue
+        if removed:
+            print(f"[DEBUG] clean_cache: removed {removed} expired items from cache")
+        return removed
+    except Exception as e:
+        print(f"[DEBUG] clean_cache error: {e}")
+        return 0
+
+
+def start_periodic_cache_clean(interval_hours=None):
+    """Start a daemon thread that calls clean_cache() every interval_hours.
+
+    If interval_hours is None the value is read from env CACHE_CLEAN_INTERVAL_HOURS
+    (default 24).
+    """
+    try:
+        if interval_hours is None:
+            try:
+                interval_hours = int(os.getenv('CACHE_CLEAN_INTERVAL_HOURS', '24'))
+            except Exception:
+                interval_hours = 24
+        interval = max(1, int(interval_hours))
+    except Exception:
+        interval = 24
+
+    def _worker():
+        try:
+            while True:
+                time.sleep(interval * 3600)
+                try:
+                    clean_cache()
+                except Exception as e:
+                    print(f"[DEBUG] periodic clean_cache error: {e}")
+        except Exception as e:
+            print(f"[DEBUG] cache cleaner thread exiting: {e}")
+
+    t = threading.Thread(target=_worker, name='cache-cleaner', daemon=True)
+    t.start()
+    print(f"[DEBUG] Started cache cleaner thread with interval {interval} hour(s)")
+
+# footer será criado no start_app()
+footer = None
+
+def start_app(host: str = '0.0.0.0', port: int = 8080):
+    """Inicializa NiceGUI de forma lazy e inicia a aplicação UI.
+
+    Isso evita que a importação do módulo NiceGUI execute ações pesadas
+    automaticamente ao importar este módulo (útil para testes unitários).
+    """
+    global ui, app, root, footer
+    try:
+        from nicegui import ui as _ui, app as _app
+    except Exception:
+        # re-raise for visibility
+        raise
+    ui = _ui
+    app = _app
+
+    # criar contêiner raiz e footer
+    root = ui.element('div').classes("w-full p-4")
+    footer = ui.footer()
+    footer.add_slot('info', f"<span>{APP_NAME} — v{APP_VERSION}</span>")
+
+    # iniciar limpeza periódica do cache
+    try:
+        start_periodic_cache_clean()
+    except Exception:
+        pass
+
+    # mostrar view inicial (login)
+    show_login()
+
+    # iniciar servidor UI
+    ui.run(host=host, port=port)
 
 def show_login():
-    root.clear()
+    global root
+    # root pode ter sido removido pelo contexto do NiceGUI (por exemplo após reload);
+    # limpar de forma segura: se root.clear() falhar, recriamos o elemento root.
+    try:
+        if root is None:
+            raise RuntimeError("root not initialized")
+        root.clear()
+    except Exception:
+        # criar um container apropriado (ui.column) no contexto atual
+        root = ui.column().classes("w-full p-4")
+
     with root:
         # centralizar o formulário de login
         # centralizar horizontal e verticalmente (ocupando a altura da viewport)
@@ -284,7 +404,19 @@ def show_login():
     # footer já criado no nível do módulo
 
 def show_kanban():
-    root.clear()
+    global root
+    try:
+        if root is None:
+            raise RuntimeError("root not initialized")
+        root.clear()
+    except Exception:
+        root = ui.column().classes("w-full p-4")
+
+    # preparar estruturas de colunas antes de definir callbacks (evita problemas de closure)
+    column_cards = {name: [] for (name, _, _) in COLUMNS}
+    start_col = COLUMNS[0][0]
+    column_containers = {}
+
     with root:
         # cabeçalho: título + contador de cards (à esquerda) e botão Logout (canto direito)
         cards_data = fetch_kanban_cards()
@@ -295,306 +427,350 @@ def show_kanban():
                 ui.label(f"🗂️ {sanitize_text(APP_NAME)} — {sanitize_text(logged_user.get('NomeUsuario', ''))}").classes("text-2xl font-bold")
                 ui.label(f"{len(cards_data)} cards carregados").classes("text-sm text-gray-500")
             # botão de logout posicionado à direita do cabeçalho
+            # botões de utilitários: Limpar cache e Atualizar cards
+            def _do_clean_cache(_=None):
+                # abrir diálogo de confirmação antes de limpar o cache
+                dlg = ui.dialog()
+                with dlg:
+                    ui.markdown("## Confirmar limpeza do cache")
+                    ui.label("Deseja realmente remover arquivos de cache expirados? Esta ação não pode ser desfeita.").classes("text-sm text-gray-700")
+                    with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                        def _confirm(_=None):
+                            try:
+                                removed = clean_cache()
+                                if removed:
+                                    ui.notify(f"Cache limpo: {removed} arquivo(s) removidos", color='positive')
+                                else:
+                                    ui.notify("Cache limpo: nenhum arquivo expirado encontrado", color='info')
+                            except Exception as e:
+                                ui.notify(f"Erro ao limpar cache: {e}", color='negative')
+                            finally:
+                                dlg.close()
+
+                        ui.button("Confirmar", on_click=_confirm).classes("primary")
+                        ui.button("Cancelar", on_click=lambda _=None: dlg.close()).classes("secondary")
+
+                dlg.open()
+
+            def _do_refresh(_=None):
+                try:
+                    new_cards = fetch_kanban_cards()
+                    # construir mapeamento novo por coluna (por enquanto todas vão para start_col como antes)
+                    new_column_cards = {name: [] for (name, _, _) in COLUMNS}
+                    for r in new_cards:
+                        new_column_cards[start_col].append(r)
+
+                    # calcular diffs por coluna (compare por NumAtendimento)
+                    changed_cols = []
+                    total_added = 0
+                    total_removed = 0
+                    for col_name in new_column_cards.keys():
+                        old_ids = {c.get('NumAtendimento') for c in (column_cards.get(col_name) or [])}
+                        new_ids = {c.get('NumAtendimento') for c in (new_column_cards.get(col_name) or [])}
+                        added = new_ids - old_ids
+                        removed = old_ids - new_ids
+                        if added or removed:
+                            # substituir a lista local e marcar a coluna para atualização
+                            column_cards[col_name] = [c for c in (new_column_cards.get(col_name) or [])]
+                            changed_cols.append(col_name)
+                            total_added += len(added)
+                            total_removed += len(removed)
+
+                    if changed_cols:
+                        # atualizar apenas as colunas que mudaram
+                        render_board(cols_to_update=changed_cols)
+                    else:
+                        # nada mudou, garantir que o UI esteja consistente
+                        ui.notify("Nenhuma alteração detectada nos cards.", color='info')
+                        return
+
+                    ui.notify(f"Atualização concluída: {len(new_cards)} cards (+{total_added}/-{total_removed})", color='positive')
+                except Exception as e:
+                    ui.notify(f"Erro ao atualizar cards: {e}", color='negative')
+
+            ui.button("Limpar cache", on_click=_do_clean_cache).classes("secondary")
+            ui.button("Atualizar cards", on_click=_do_refresh).classes("secondary")
             ui.button("Logout", on_click=lambda _: show_login()).classes("secondary")
 
-        # board responsivo: permite overflow-x em telas pequenas e distribui colunas em telas maiores
+    # board responsivo: permite overflow-x em telas pequenas e distribui colunas em telas maiores
+    with root:
         board = ui.row().classes("w-full gap-4 items-start").style("overflow-x: auto;")
+    # Colocar todos os cards inicialmente na coluna "A iniciar"
+    for row in cards_data:
+        column_cards[start_col].append(row)
 
-        # Colocar todos os cards inicialmente na coluna "A iniciar"
-        column_cards = {name: [] for (name, _, _) in COLUMNS}
-        start_col = COLUMNS[0][0]  # nome da primeira coluna ("A iniciar")
-        for row in cards_data:
-            column_cards[start_col].append(row)
+    def render_board(cols_to_update=None):
+        """Renderiza colunas. Se cols_to_update for None, renderiza todas; caso contrário
+        apenas atualiza as colunas listadas (nomes).
+        """
 
-        def render_board():
+        def _format_datetime(value):
+            if value is None:
+                return "-"
+            if isinstance(value, datetime):
+                return value.strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                s = value.decode(errors='ignore') if isinstance(value, (bytes, bytearray)) else str(value)
+                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                    try:
+                        dt = datetime.strptime(s, fmt)
+                        return dt.strftime("%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        continue
+                return sanitize_text(s)
+            except Exception:
+                return sanitize_text(str(value))
+
+        def _days_open_for_card(card_item):
+            try:
+                av = card_item.get('Abertura')
+                if av is None:
+                    return -1
+                if isinstance(av, datetime):
+                    dt = av
+                else:
+                    s = av.decode(errors='ignore') if isinstance(av, (bytes, bytearray)) else str(av)
+                    dt = None
+                    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                        try:
+                            dt = datetime.strptime(s, fmt)
+                            break
+                        except Exception:
+                            continue
+                if not dt:
+                    return -1
+                return (datetime.now() - dt).days
+            except Exception:
+                return -1
+
+        # criar colunas (header + container) na primeira chamada
+        if not column_containers:
             board.clear()
             with board:
-                for col_name, bg_color, situ_code in COLUMNS:
-                    # aumentar largura das colunas para aproveitar espaço disponível
-                    # usar w-80 (20rem) e min-width maior para melhorar legibilidade em telas grandes
-                    # colunas com flex-grow para preenchimento proporcional do espaço disponível
-                    # usar basis-0 + flex-1 para que as colunas dividam igualmente o espaço
-                    # manter min-width menor para evitar colunas muito estreitas
+                for col_name, bg_color, _ in COLUMNS:
                     with ui.column().classes("basis-0 flex-1").style("min-width: 12rem;"):
                         ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(f"background:{bg_color};")
-                        # Render cards with a select + button mover (compatível com versões sem drop_zone)
-                        def format_datetime(value):
-                            """Normaliza diferentes formatos de entrada e retorna YYYY-MM-DD HH:MM:SS.
+                        cards_container = ui.column().classes("p-2")
+                        column_containers[col_name] = cards_container
 
-                            Aceita datetime, bytes ou strings em formatos comuns e tenta extrair
-                            uma representação consistente com segundos.
-                            """
-                            if value is None:
-                                return "-"
-                            # datetime já formatado
-                            if isinstance(value, datetime):
-                                return value.strftime("%Y-%m-%d %H:%M:%S")
-                            try:
-                                if isinstance(value, bytes):
-                                    s = value.decode(errors='ignore')
-                                else:
-                                    s = str(value)
-                                # tentar vários formatos conhecidos
-                                for fmt in (
-                                    "%Y-%m-%d %H:%M:%S.%f",
-                                    "%Y-%m-%d %H:%M:%S",
-                                    "%Y-%m-%d %H:%M",
-                                    "%Y-%m-%d",
-                                    "%d/%m/%Y %H:%M:%S",
-                                    "%d/%m/%Y %H:%M",
-                                    "%d/%m/%Y",
-                                ):
+        cols = [c[0] for c in COLUMNS] if cols_to_update is None else cols_to_update
+        for col_name in cols:
+            cards_container = column_containers.get(col_name)
+            if cards_container is None:
+                continue
+            try:
+                cards_container.clear()
+            except Exception:
+                pass
+
+            try:
+                # ordenar e renderizar os cards da coluna
+                cards_to_render = sorted(column_cards.get(col_name, []) or [], key=_days_open_for_card, reverse=True)
+            except Exception:
+                cards_to_render = column_cards.get(col_name, []) or []
+
+            for card in cards_to_render:
+                num = card.get("NumAtendimento")
+                cliente = sanitize_text(card.get("NomeCliente") or "-")
+                ultima = _format_datetime(card.get("UltimaIteracao"))
+                texto_raw = card.get("TextoIteracao") or ""
+
+                with cards_container:
+                    with ui.card().classes("mb-3 shadow-sm").style(f"border-left:4px solid {COLUMN_MAP.get(col_name, {}).get('color', '#ffffff')};"):
+                        # header: cliente + id
+                        with ui.row().classes("items-center justify-between w-full"):
+                            ui.label(cliente).classes("font-semibold text-lg")
+                            with ui.row().classes("items-center"):
+                                ui.label(f"#{num}").classes("text-sm text-gray-600 ml-2")
+
+                        # Abertura (dias em aberto) e Próximo contato
+                        abertura_val = card.get("Abertura")
+                        dt_abertura = None
+                        try:
+                            if isinstance(abertura_val, datetime):
+                                dt_abertura = abertura_val
+                            else:
+                                s = abertura_val.decode(errors='ignore') if isinstance(abertura_val, (bytes, bytearray)) else str(abertura_val)
+                                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
                                     try:
-                                        dt = datetime.strptime(s, fmt)
-                                        return dt.strftime("%Y-%m-%d %H:%M:%S")
+                                        dt_abertura = datetime.strptime(s, fmt)
+                                        break
                                     except Exception:
                                         continue
-                                # se não foi possível parsear, retornar a string sanitizada
-                                return sanitize_text(s)
-                            except Exception:
-                                return sanitize_text(str(value))
-
-                        # ordenar cards da coluna por dias em aberto (decrescente)
-                        try:
-                            now_dt = datetime.now()
-                            def _days_open_for_card(card_item):
-                                try:
-                                    av = card_item.get('Abertura')
-                                    if av is None:
-                                        return -1
-                                    # reutilizar _parse_date se disponível, senão tentar parse simplificado
-                                    try:
-                                        if isinstance(av, datetime):
-                                            dt = av
-                                        else:
-                                            s = av.decode(errors='ignore') if isinstance(av, (bytes, bytearray)) else str(av)
-                                            for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
-                                                try:
-                                                    dt = datetime.strptime(s, fmt)
-                                                    break
-                                                except Exception:
-                                                    dt = None
-                                    except Exception:
-                                        dt = None
-                                    if not dt:
-                                        return -1
-                                    return (now_dt - dt).days
-                                except Exception:
-                                    return -1
-
-                            cards_to_render = sorted(column_cards.get(col_name, []) or [], key=_days_open_for_card, reverse=True)
                         except Exception:
-                            cards_to_render = column_cards.get(col_name, []) or []
+                            dt_abertura = None
 
-                        for card in cards_to_render:
-                            num = card.get("NumAtendimento")
-                            cliente = sanitize_text(card.get("NomeCliente") or "-")
-                            assunto = sanitize_text(card.get("AssuntoAtendimento") or "-")
-                            ultima = format_datetime(card.get("UltimaIteracao"))
-                            texto_raw = card.get("TextoIteracao") or ""
-                            texto = limpar_rtf(texto_raw)
-                            snippet = (texto[:250] + "...") if len(texto) > 250 else texto
-                            snippet = sanitize_text(snippet)
-                            titulo_bg = COLUMN_MAP.get(col_name, {}).get("color", "#ffffff")
+                        days_open = None
+                        try:
+                            if dt_abertura:
+                                days_open = (datetime.now() - dt_abertura).days
+                        except Exception:
+                            days_open = None
 
-                            # cartão com borda colorida e layout melhorado
-                            with ui.card().classes("mb-3 shadow-sm").style(f"border-left:4px solid {titulo_bg};"):
-                                with ui.row().classes("items-center justify-between"):
-                                    ui.column().classes("mr-2")
-                                    # header: cliente + id
-                                    with ui.row().classes("items-center justify-between w-full"):
-                                        ui.label(cliente).classes("font-semibold text-lg")
-                                        # calcular dias em aberto a partir de Abertura (RegInclusao)
-                                        abertura_val = card.get("Abertura")
-                                        def _parse_date(v):
-                                            if v is None:
-                                                return None
-                                            if isinstance(v, datetime):
-                                                return v
-                                            try:
-                                                if isinstance(v, bytes):
-                                                    s = v.decode(errors='ignore')
-                                                else:
-                                                    s = str(v)
-                                                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
-                                                    try:
-                                                        return datetime.strptime(s, fmt)
-                                                    except Exception:
-                                                        continue
-                                            except Exception:
-                                                return None
-                                            return None
+                        if days_open is not None:
+                            try:
+                                color_class = "text-blue-600" if int(days_open) <= 120 else "text-red-600"
+                            except Exception:
+                                color_class = "text-red-600"
+                            lbl = ui.label(f"Aberto há {days_open} dias").classes(f"text-sm font-bold {color_class} ml-0")
+                            try:
+                                if dt_abertura:
+                                    ui.tooltip(lbl, f"Data de abertura: {dt_abertura.strftime('%d/%m/%Y')}")
+                            except Exception:
+                                pass
 
-                                        dt_abertura = _parse_date(abertura_val)
-                                        days_open = None
-                                        try:
-                                            if dt_abertura:
-                                                days_open = (datetime.now() - dt_abertura).days
-                                        except Exception:
-                                            days_open = None
-
-                                        # mostrar id e dias em aberto (dias em vermelho e negrito)
-                                        with ui.row().classes("items-center"):
-                                            ui.label(f"#{num}").classes("text-sm text-gray-600 ml-2")
-                                            if days_open is not None:
-                                                # cor azul quando <= 120 dias, vermelho quando > 120 dias
-                                                try:
-                                                    color_class = "text-blue-600" if int(days_open) <= 120 else "text-red-600"
-                                                except Exception:
-                                                    color_class = "text-red-600"
-                                                lbl = ui.label(f"Aberto há {days_open} dias").classes(f"text-sm font-bold {color_class} ml-3")
-                                                # tooltip com a data de abertura no formato dd/mm/aaaa
-                                                try:
-                                                    if dt_abertura:
-                                                        ui.tooltip(lbl, f"Data de abertura: {dt_abertura.strftime('%d/%m/%Y')}")
-                                                except Exception:
-                                                    pass
-                                # mostrar Próximo contato no lugar do assunto (ocupando a mesma linha)
-                                prox_val = card.get("DataProxContato")
-                                dt_prox = None
-                                try:
-                                    dt_prox = _parse_date(prox_val)
-                                except Exception:
-                                    dt_prox = None
-
-                                if dt_prox:
+                        # Próximo contato
+                        prox_val = card.get("DataProxContato")
+                        dt_prox = None
+                        try:
+                            if isinstance(prox_val, datetime):
+                                dt_prox = prox_val
+                            else:
+                                s = prox_val.decode(errors='ignore') if isinstance(prox_val, (bytes, bytearray)) else str(prox_val)
+                                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
                                     try:
-                                        prox_date_str = dt_prox.strftime("%d/%m/%Y")
+                                        dt_prox = datetime.strptime(s, fmt)
+                                        break
                                     except Exception:
-                                        prox_date_str = sanitize_text(str(prox_val))
+                                        continue
+                        except Exception:
+                            dt_prox = None
+
+                        if dt_prox:
+                            try:
+                                prox_date_str = dt_prox.strftime("%d/%m/%Y")
+                            except Exception:
+                                prox_date_str = sanitize_text(str(prox_val))
+                        else:
+                            prox_date_str = "-"
+
+                        prox_color = "text-gray-500"
+                        try:
+                            if dt_prox:
+                                today = datetime.now().date()
+                                pd = dt_prox.date()
+                                if pd < today:
+                                    prox_color = "text-red-600"
+                                elif pd == today:
+                                    prox_color = "text-black"
                                 else:
-                                    prox_date_str = "-"
+                                    prox_color = "text-blue-600"
+                        except Exception:
+                            prox_color = "text-gray-500"
 
-                                # determinar cor: vermelho (passado), preto (hoje), azul (futuro)
-                                prox_color = "text-gray-500"
+                        ui.label(f"Próximo contato: {prox_date_str}").classes(f"text-sm {prox_color} mt-1 mb-1")
+
+                        # última interação e snippet
+                        texto = limpar_rtf(texto_raw)
+                        snippet = (texto[:250] + "...") if len(texto) > 250 else texto
+                        snippet = sanitize_text(snippet)
+                        ui.label(f"Última interação: {ultima}").classes("text-xs text-gray-500 mb-1")
+                        if snippet:
+                            ui.label(snippet).classes("text-sm text-gray-700 mb-2")
+
+                        with ui.row().classes("items-center gap-2"):
+                            latest = fetch_latest_iteration(num)
+                            analyst = sanitize_text((latest.get('NomeUsuario') if latest else None) or '-')
+                            ui.label(f"Analista: {analyst}").classes("text-sm text-gray-600")
+                            ui.button("Histórico", on_click=lambda _, n=num: show_history_dialog(n)).classes("primary")
+
+                            # RDMs dialog
+                            def _show_rdms_local(_, n=num):
+                                rdms = fetch_rdms(n)
+                                dlg = ui.dialog()
+                                dlg.classes("w-full max-w-6xl")
+                                with dlg:
+                                    if not rdms:
+                                        ui.label("Nenhuma RDM encontrada").classes("text-sm text-gray-500")
+                                    else:
+                                        with ui.row().classes("w-full justify-center"):
+                                            with ui.column().classes("w-full max-w-4xl").style("overflow:auto; max-height:60vh;padding-right:8px;"):
+                                                for r in rdms:
+                                                    with ui.card().classes("mb-2 p-3 w-full"):
+                                                        numrdm = sanitize_text(r.get('IdRdm') or '')
+                                                        desdob_raw = r.get('Desdobramento')
+                                                        desdob = sanitize_text(desdob_raw) if desdob_raw is not None else ''
+                                                        tipordm = sanitize_text(r.get('NomeTipoRDM') or '')
+                                                        situ = sanitize_text(r.get('SituacaoRDM') or '')
+                                                        reg = r.get('RegInclusao')
+                                                        data_str = _format_datetime(reg)
+                                                        desc = sanitize_text(r.get('Descricao') or '')
+                                                        md = (
+                                                            f"**Nº:** {numrdm} / {desdob}\n\n"
+                                                            f"**Tipo de RDM:** {tipordm}\n\n"
+                                                            f"**Situação:** {situ}\n\n"
+                                                            f"**Abertura:** {data_str}\n\n"
+                                                            f"**Descrição:** {desc}"
+                                                        )
+                                                        ui.markdown(md)
+                                    with ui.row().classes("w-full mt-4 justify-center"):
+                                        ui.button("Fechar", on_click=lambda _=None: dlg.close()).classes("primary")
+                                dlg.open()
+
+                            ui.button("RDMs", on_click=_show_rdms_local).classes("secondary")
+
+                            # imagem: verificar se existe imagem antes de habilitar o botão
+                            def _open_image_dialog_local(_, rtf=texto_raw):
+                                img_bytes, mime = extract_first_image_from_rtf(rtf)
+                                dlg = ui.dialog()
+                                with dlg:
+                                    if img_bytes and mime:
+                                        b64 = base64.b64encode(img_bytes).decode()
+                                        ui.image(f"data:{mime};base64,{b64}").style("max-width:100%;max-height:60vh;object-fit:contain;")
+                                    else:
+                                        ui.label("[Imagem] — não foi possível extrair a imagem").classes("text-sm text-gray-600")
+                                    with ui.row().classes('w-full justify-end gap-2'):
+                                        ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('secondary')
+                                dlg.open()
+
+                            # detectar rapidamente se há imagem extraível para habilitar o botão
+                            img_available = False
+                            try:
+                                try_img, try_mime = extract_first_image_from_rtf(texto_raw)
+                                img_available = bool(try_img and try_mime)
+                            except Exception:
+                                img_available = False
+
+                            btn_img = ui.button('Imagem', on_click=_open_image_dialog_local).classes('secondary')
+                            if not img_available:
+                                # desabilitar e mostrar tooltip explicando
                                 try:
-                                    if dt_prox:
-                                        today = datetime.now().date()
-                                        pd = dt_prox.date()
-                                        if pd < today:
-                                            prox_color = "text-red-600"
-                                        elif pd == today:
-                                            prox_color = "text-black"
-                                        else:
-                                            prox_color = "text-blue-600"
+                                    btn_img.props('disabled', True)
+                                    ui.tooltip(btn_img, 'Nenhuma imagem detectada neste texto')
                                 except Exception:
-                                    prox_color = "text-gray-500"
+                                    # fallback: apenas esconder o botão se props falhar
+                                    try:
+                                        btn_img.visible = False
+                                    except Exception:
+                                        pass
 
-                                ui.label(f"Próximo contato: {prox_date_str}").classes(f"text-sm {prox_color} mt-1 mb-1")
-                                # última interação
-                                ui.label(f"Última interação: {ultima}").classes("text-xs text-gray-500 mb-2")
-                                    # trecho do texto da última iteração
-                                if snippet:
-                                    ui.label(snippet).classes("text-sm text-gray-700 mb-2")
+                            # mover
+                            options = [name for (name, _, _) in COLUMNS]
+                            sel = ui.select(options, value=col_name).classes("w-full")
 
-                                    
+                            def do_move(_, c=card, select_widget=sel):
+                                dest = select_widget.value
+                                if dest == col_name:
+                                    ui.notify("O card já está nessa coluna", color="warning")
+                                    return
+                                moved = None
+                                for it in column_cards.get(col_name, []):
+                                    if str(it.get("NumAtendimento")) == str(c.get("NumAtendimento")):
+                                        moved = it
+                                        break
+                                if moved:
+                                    column_cards[col_name].remove(moved)
+                                    column_cards[dest].append(moved)
+                                    new_code = COLUMN_MAP.get(dest, {}).get("situacao")
+                                    if new_code is not None:
+                                        ok = update_situacao_on_move(moved.get("NumAtendimento"), new_code)
+                                        if ok:
+                                            ui.notify(f'✔ "{moved.get("NomeCliente")}" movido para "{dest}"')
+                                        else:
+                                            ui.notify("Erro ao atualizar situação", color="negative")
+                                    render_board()
 
-                                with ui.row().classes("items-center gap-2"):
-                                    # mostra analista (última iteração) e botões para histórico e RDMs
-                                    latest = fetch_latest_iteration(num)
-                                    analyst = sanitize_text((latest.get('NomeUsuario') if latest else None) or '-')
-                                    ui.label(f"Analista: {analyst}").classes("text-sm text-gray-600")
-
-                                    ui.button("Histórico", on_click=lambda _, n=num: show_history_dialog(n)).classes("primary")
-
-                                    def show_rdms(_, n=num):
-                                        rdms = fetch_rdms(n)
-                                        dlg = ui.dialog()
-                                        # aumentar largura do diálogo para melhor visibilidade
-                                        dlg.classes("w-full max-w-6xl")
-                                        with dlg:
-                                            # título removido — diálogo exibirá apenas a lista e os totalizadores
-                                            if not rdms:
-                                                ui.label("Nenhuma RDM encontrada").classes("text-sm text-gray-500")
-                                            else:
-                                                # ordenar pelas datas de abertura (RegInclusao) - mais antigas primeiro
-                                                try:
-                                                    rdms_sorted = sorted(rdms, key=lambda x: x.get('RegInclusao') or datetime.max, reverse=False)
-                                                except Exception:
-                                                    rdms_sorted = rdms
-
-                                                # calcular totalizadores por tipo e por situação
-                                                totals_by_tipo = {}
-                                                totals_by_situacao = {}
-                                                for r in rdms_sorted:
-                                                    tipo = (r.get('NomeTipoRDM') or '').strip() or 'N/A'
-                                                    sit = (r.get('SituacaoRDM') or '').strip() or 'N/A'
-                                                    totals_by_tipo[tipo] = totals_by_tipo.get(tipo, 0) + 1
-                                                    totals_by_situacao[sit] = totals_by_situacao.get(sit, 0) + 1
-
-                                                # lista detalhada de RDMs em uma única coluna/form para melhor legibilidade
-                                                # envolver a lista em uma linha centralizada para garantir alinhamento correto
-                                                with ui.row().classes("w-full justify-center"):
-                                                    with ui.column().classes("w-full max-w-4xl").style("overflow:auto; max-height:60vh;padding-right:8px;"):
-                                                        for r in rdms_sorted:
-                                                            with ui.card().classes("mb-2 p-3 w-full"):
-                                                                numrdm = sanitize_text(r.get('IdRdm') or '')
-                                                                # mostrar 0 quando Desdobramento for 0 (evitar falsy '' quando o valor é 0)
-                                                                desdob_raw = r.get('Desdobramento')
-                                                                desdob = sanitize_text(desdob_raw) if desdob_raw is not None else ''
-                                                                tipordm = sanitize_text(r.get('NomeTipoRDM') or '')
-                                                                situ = sanitize_text(r.get('SituacaoRDM') or '')
-                                                                reg = r.get('RegInclusao')
-                                                                data_str = format_datetime(reg)
-                                                                desc = sanitize_text(r.get('Descricao') or '')
-
-                                                                md = (
-                                                                    f"**Nº:** {numrdm} / {desdob}\n\n"
-                                                                    f"**Tipo de RDM:** {tipordm}\n\n"
-                                                                    f"**Situação:** {situ}\n\n"
-                                                                    f"**Abertura:** {data_str}\n\n"
-                                                                    f"**Descrição:** {desc}"
-                                                                )
-                                                                ui.markdown(md)
-
-                                                # exibir totalizadores ao final: por tipo e por situação (bloco com fundo branco)
-                                                # totalizadores centralizados com largura limitada para manter alinhamento em telas grandes
-                                                with ui.row().classes("w-full mt-4 justify-center"):
-                                                    with ui.card().classes("mx-auto w-full max-w-3xl").style("background:#ffffff;padding:12px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,0.08);"):
-                                                        with ui.row().classes("w-full gap-8 items-start"):
-                                                            with ui.column().classes("w-1/2"):
-                                                                ui.markdown("**Total por Tipo de RDM:**\n\n")
-                                                                for tipo, cnt in sorted(totals_by_tipo.items(), key=lambda i: (-i[1], i[0])):
-                                                                    ui.markdown(f"- **{tipo}**: {cnt}")
-                                                            with ui.column().classes("w-1/2"):
-                                                                ui.markdown("**Total por Situação de RDM:**\n\n")
-                                                                for sit, cnt in sorted(totals_by_situacao.items(), key=lambda i: (-i[1], i[0])):
-                                                                    ui.markdown(f"- **{sit}**: {cnt}")
-                                                # botão de fechar centralizado abaixo dos totais
-                                                with ui.row().classes("w-full mt-4 justify-center"):
-                                                    ui.button("Fechar", on_click=lambda _: dlg.close()).classes("primary")
-                                        dlg.open()
-
-                                    ui.button("RDMs", on_click=show_rdms).classes("secondary")
-
-                                    # seletor para escolher coluna de destino e botão para mover
-                                    options = [name for (name, _, _) in COLUMNS]
-                                    sel = ui.select(options, value=col_name).classes("w-full")
-
-                                    def do_move(_, c=card, select_widget=sel):
-                                        dest = select_widget.value
-                                        if dest == col_name:
-                                            ui.notify("O card já está nessa coluna", color="warning")
-                                            return
-                                        # remover da coluna atual
-                                        moved = None
-                                        for it in column_cards.get(col_name, []):
-                                            if str(it.get("NumAtendimento")) == str(c.get("NumAtendimento")):
-                                                moved = it
-                                                break
-                                        if moved:
-                                            column_cards[col_name].remove(moved)
-                                            column_cards[dest].append(moved)
-                                            new_code = COLUMN_MAP.get(dest, {}).get("situacao")
-                                            if new_code is not None:
-                                                ok = update_situacao_on_move(moved.get("NumAtendimento"), new_code)
-                                                if ok:
-                                                    ui.notify(f'✔ "{moved.get("NomeCliente")}" movido para "{dest}"')
-                                                else:
-                                                    ui.notify("Erro ao atualizar situação", color="negative")
-                                            render_board()
-
-                                    ui.button("Mover", on_click=do_move).classes("secondary")
+                            ui.button("Mover", on_click=do_move).classes("secondary")
 
     def show_history_dialog(num_atendimento):
         hist = fetch_history(num_atendimento)
@@ -707,14 +883,20 @@ def show_kanban():
     render_board()
 
 # ---------- Execução ----------
-# Em modo normal, mostramos o login. Em modo de desenvolvimento (AUTO_KANBAN=1)
-# pulamos o login para abrir direto o Kanban (útil para debug local).
-if os.getenv('AUTO_KANBAN') == '1':
-    # preenche um usuário de desenvolvimento mínimo
-    logged_user.update({"CodUsuario": 0, "NomeUsuario": "dev"})
-    show_kanban()
-else:
-    show_login()
-
+# A inicialização da UI (show_login/show_kanban + ui.run) fica
+# dentro do guard "if __name__ == '__main__'" para evitar que o
+# servidor NiceGUI seja iniciado quando este módulo for importado
+# por testes ou outras ferramentas.
 if __name__ in {"__main__", "__mp_main__"}:
-    ui.run(title=APP_NAME, reload=True, port=8888, host="0.0.0.0")
+    # limpar cache de imagens expiradas antes de iniciar a UI
+    clean_cache()
+
+    # Em modo normal, inicializamos a UI via start_app().
+    # Se AUTO_KANBAN=1 queremos pular o login e abrir direto o Kanban (útil para debug).
+    auto = os.getenv('AUTO_KANBAN') == '1'
+    if auto:
+        logged_user.update({"CodUsuario": 0, "NomeUsuario": "dev"})
+
+    # start_app fará start_periodic_cache_clean internamente
+    # porta e host permanecem como antes
+    start_app(host=os.getenv('APP_HOST', '0.0.0.0'), port=int(os.getenv('APP_PORT', '8888')))

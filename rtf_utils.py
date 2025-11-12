@@ -274,3 +274,167 @@ def limpar_texto_para_pdf(texto):
     texto_final = ' '.join(resultado.split()).strip()
     
     return texto_final
+
+
+def extract_first_image_from_rtf(rtf_data):
+    r"""
+    Tenta extrair a primeira imagem embutida em um bloco RTF (\pict).
+    Retorna tupla (bytes, mime_type) ou (None, None) se não encontrar.
+    """
+    if not rtf_data:
+        return None, None
+
+    # normalize to string (latin-1 preserves raw byte values 0-255)
+    if isinstance(rtf_data, bytes):
+        try:
+            s = rtf_data.decode('latin-1')
+        except Exception:
+            s = rtf_data.decode('utf-8', errors='ignore')
+    else:
+        s = str(rtf_data)
+
+    def find_group_at_pos(text, pos_open):
+        """Given index of an opening brace, return substring of the balanced group."""
+        depth = 0
+        for i in range(pos_open, len(text)):
+            ch = text[i]
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[pos_open:i+1]
+        return text[pos_open:]
+
+    # scan for occurrences of '\pict' and extract the enclosing group using brace-matching
+    for m in re.finditer(r"\\pict\b", s, flags=re.IGNORECASE):
+        pict_pos = m.start()
+        # find the opening brace '{' that starts the group containing this \pict
+        open_brace_pos = s.rfind('{', 0, pict_pos)
+        if open_brace_pos == -1:
+            # fallback: use pict_pos as start
+            open_brace_pos = pict_pos
+        block = find_group_at_pos(s, open_brace_pos)
+
+        # identify mime by control words
+        mime = 'application/octet-stream'
+        if re.search(r"\\pngblip", block, flags=re.IGNORECASE):
+            mime = 'image/png'
+        elif re.search(r"\\jpegblip", block, flags=re.IGNORECASE):
+            mime = 'image/jpeg'
+
+        # If there is a \binN control, try to find the raw binary immediately after it
+        bin_match = re.search(r"\\bin(\d+)\b", block)
+        if bin_match:
+            try:
+                bin_len = int(bin_match.group(1))
+                # raw bytes are likely present in the decoded latin-1 string after the control
+                start = block.find(bin_match.group(0)) + len(bin_match.group(0))
+                # skip optional spaces/newlines
+                while start < len(block) and block[start] in (' ', '\r', '\n', '\t'):
+                    start += 1
+                raw = block[start:]
+                # take up to bin_len bytes from raw using latin-1 ord mapping
+                byte_vals = [ord(ch) for ch in raw[:bin_len]]
+                if len(byte_vals) >= 4:
+                    img_bytes = bytes(byte_vals)
+                    if img_bytes.startswith(b'\x89PNG'):
+                        return img_bytes, 'image/png'
+                    if img_bytes.startswith(b'\xff\xd8'):
+                        return img_bytes, 'image/jpeg'
+            except Exception:
+                pass
+
+        # try to find hex sequences inside the block (continuous hex characters)
+        # first look for long hex strings (likely embedded file data)
+        for hex_match in re.finditer(r"([0-9A-Fa-f]{40,})", block):
+            hexclean = hex_match.group(1)
+            try:
+                img_bytes = bytes.fromhex(hexclean)
+                if img_bytes.startswith(b'\x89PNG'):
+                    return img_bytes, 'image/png'
+                if img_bytes.startswith(b'\xff\xd8'):
+                    return img_bytes, 'image/jpeg'
+            except Exception:
+                continue
+
+        # allow hex with spaces/newlines between bytes
+        hex_with_spaces = re.search(r"(([0-9A-Fa-f]{2}[\s\r\n]+){20,}[0-9A-Fa-f]{2})", block)
+        if hex_with_spaces:
+            hexdata = re.sub(r"[^0-9A-Fa-f]", '', hex_with_spaces.group(1))
+            try:
+                img_bytes = bytes.fromhex(hexdata)
+                if img_bytes.startswith(b'\x89PNG'):
+                    return img_bytes, 'image/png'
+                if img_bytes.startswith(b'\xff\xd8'):
+                    return img_bytes, 'image/jpeg'
+            except Exception:
+                pass
+
+        # decimal sequences inside the block
+        dec_match = re.search(r"((?:\d{1,3}[\s,\r\n]){20,}\d{1,3})", block)
+        if dec_match:
+            nums = re.findall(r"\d{1,3}", dec_match.group(1))
+            try:
+                byte_vals = [int(n) for n in nums if 0 <= int(n) <= 255]
+                img_bytes = bytes(byte_vals)
+                if img_bytes.startswith(b'\x89PNG'):
+                    return img_bytes, 'image/png'
+                if img_bytes.startswith(b'\xff\xd8'):
+                    return img_bytes, 'image/jpeg'
+            except Exception:
+                pass
+
+    # fallback: scan entire document for long hex or decimal sequences
+    for hex_match in re.finditer(r"([0-9A-Fa-f]{80,})", s):
+        try:
+            img_bytes = bytes.fromhex(hex_match.group(1))
+            if img_bytes.startswith(b'\x89PNG'):
+                return img_bytes, 'image/png'
+            if img_bytes.startswith(b'\xff\xd8'):
+                return img_bytes, 'image/jpeg'
+        except Exception:
+            continue
+
+    for dec_match in re.finditer(r"((?:\d{1,3}[\s,\r\n]){40,}\d{1,3})", s):
+        nums = re.findall(r"\d{1,3}", dec_match.group(1))
+        try:
+            byte_vals = [int(n) for n in nums if 0 <= int(n) <= 255]
+            img_bytes = bytes(byte_vals)
+            if img_bytes.startswith(b'\x89PNG'):
+                return img_bytes, 'image/png'
+            if img_bytes.startswith(b'\xff\xd8'):
+                return img_bytes, 'image/jpeg'
+        except Exception:
+            continue
+
+    # Final fallback: procurar uma assinatura PNG/JPEG em hex em qualquer lugar do documento
+    # e coletar caracteres hex (permitindo espaços/newlines) a partir da assinatura.
+    try:
+        sig = re.search(r"(89504E47|FFD8FF)", s, flags=re.IGNORECASE)
+        if sig:
+            start = sig.start()
+            hex_parts = []
+            # coletar até encontrar o primeiro caractere que não seja hex/nova linha/espaco
+            for ch in s[start:]:
+                if ch in '0123456789abcdefABCDEF' or ch.isspace():
+                    hex_parts.append(ch)
+                else:
+                    # pare ao encontrar um controle RTF (\, {, }) ou outro caractere
+                    break
+            hex_str = ''.join(hex_parts)
+            hex_clean = re.sub(r'[^0-9A-Fa-f]', '', hex_str)
+            # deve ser suficientemente grande para ser um arquivo de imagem
+            if len(hex_clean) >= 32:
+                try:
+                    img_bytes = bytes.fromhex(hex_clean)
+                    if img_bytes.startswith(b'\x89PNG'):
+                        return img_bytes, 'image/png'
+                    if img_bytes.startswith(b'\xff\xd8'):
+                        return img_bytes, 'image/jpeg'
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return None, None
