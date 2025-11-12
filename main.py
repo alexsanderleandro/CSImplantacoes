@@ -60,7 +60,6 @@ COLUMNS = [
     ("Implantação pausada", "#fef08a", 104),
     ("Implantação cancelada", "#f87171", 105),
     ("Visita pós-implantação", "#f5f0d9", 106),
-    ("Implantação concluída", "#93c5fd", 107),
 ]
 COLUMN_MAP = {name: {"color": color, "situacao": situ} for (name, color, situ) in COLUMNS}
 
@@ -298,6 +297,7 @@ def show_kanban():
             # botão de logout posicionado à direita do cabeçalho
             ui.button("Logout", on_click=lambda _: show_login()).classes("secondary")
 
+        # board responsivo: permite overflow-x em telas pequenas e distribui colunas em telas maiores
         board = ui.row().classes("w-full gap-4 items-start").style("overflow-x: auto;")
 
         # Colocar todos os cards inicialmente na coluna "A iniciar"
@@ -310,7 +310,12 @@ def show_kanban():
             board.clear()
             with board:
                 for col_name, bg_color, situ_code in COLUMNS:
-                    with ui.column().classes("w-72").style("min-width: 18rem;"):
+                    # aumentar largura das colunas para aproveitar espaço disponível
+                    # usar w-80 (20rem) e min-width maior para melhorar legibilidade em telas grandes
+                    # colunas com flex-grow para preenchimento proporcional do espaço disponível
+                    # usar basis-0 + flex-1 para que as colunas dividam igualmente o espaço
+                    # manter min-width menor para evitar colunas muito estreitas
+                    with ui.column().classes("basis-0 flex-1").style("min-width: 12rem;"):
                         ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(f"background:{bg_color};")
                         # Render cards with a select + button mover (compatível com versões sem drop_zone)
                         def format_datetime(value):
@@ -349,7 +354,39 @@ def show_kanban():
                             except Exception:
                                 return sanitize_text(str(value))
 
-                        for card in column_cards.get(col_name, []):
+                        # ordenar cards da coluna por dias em aberto (decrescente)
+                        try:
+                            now_dt = datetime.now()
+                            def _days_open_for_card(card_item):
+                                try:
+                                    av = card_item.get('Abertura')
+                                    if av is None:
+                                        return -1
+                                    # reutilizar _parse_date se disponível, senão tentar parse simplificado
+                                    try:
+                                        if isinstance(av, datetime):
+                                            dt = av
+                                        else:
+                                            s = av.decode(errors='ignore') if isinstance(av, (bytes, bytearray)) else str(av)
+                                            for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                                                try:
+                                                    dt = datetime.strptime(s, fmt)
+                                                    break
+                                                except Exception:
+                                                    dt = None
+                                    except Exception:
+                                        dt = None
+                                    if not dt:
+                                        return -1
+                                    return (now_dt - dt).days
+                                except Exception:
+                                    return -1
+
+                            cards_to_render = sorted(column_cards.get(col_name, []) or [], key=_days_open_for_card, reverse=True)
+                        except Exception:
+                            cards_to_render = column_cards.get(col_name, []) or []
+
+                        for card in cards_to_render:
                             num = card.get("NumAtendimento")
                             cliente = sanitize_text(card.get("NomeCliente") or "-")
                             assunto = sanitize_text(card.get("AssuntoAtendimento") or "-")
