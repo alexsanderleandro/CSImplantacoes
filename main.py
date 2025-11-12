@@ -269,6 +269,64 @@ try:
 except Exception:
     CACHE_TTL_DAYS = 30
 
+
+def _image_cache_key(content) -> str:
+    """Retorna a chave (sha256 hex) para o conteúdo fornecido.
+
+    Aceita bytes/str/None.
+    """
+    if content is None:
+        return None
+    try:
+        if isinstance(content, (bytes, bytearray)):
+            b = bytes(content)
+        else:
+            b = str(content).encode('utf-8', errors='ignore')
+        return hashlib.sha256(b).hexdigest()
+    except Exception:
+        return None
+
+
+def _image_flag_path_for_key(key: str) -> str:
+    return os.path.join(CACHE_DIR, f"{key}.hasimg") if key else None
+
+
+def get_image_flag_for_content(content) -> 'bool|None':
+    """Retorna True/False se o cache indicar presença de imagem, ou None se não houver cache."""
+    try:
+        key = _image_cache_key(content)
+        if not key:
+            return None
+        p = _image_flag_path_for_key(key)
+        if p and os.path.exists(p):
+            try:
+                with open(p, 'r', encoding='utf-8') as f:
+                    v = f.read(1)
+                return v == '1'
+            except Exception:
+                return None
+        return None
+    except Exception:
+        return None
+
+
+def set_image_flag_for_content(content, exists: bool):
+    """Grava arquivo de flag indicando se o conteúdo contém uma imagem.
+
+    O arquivo é limpo pelo `clean_cache()` baseado em mtime.
+    """
+    try:
+        key = _image_cache_key(content)
+        if not key:
+            return
+        p = _image_flag_path_for_key(key)
+        if not p:
+            return
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write('1' if exists else '0')
+    except Exception:
+        pass
+
 def clean_cache():
     """Remove arquivos do cache mais antigos que CACHE_TTL_DAYS (baseado em mtime)."""
     try:
@@ -726,17 +784,60 @@ def show_kanban():
                             # detectar rapidamente se há imagem extraível para habilitar o botão
                             img_available = False
                             try:
-                                try_img, try_mime = extract_first_image_from_rtf(texto_raw)
-                                img_available = bool(try_img and try_mime)
-                            except Exception:
+                                cached = get_image_flag_for_content(texto_raw)
+                                key = _image_cache_key(texto_raw)
+                                print(f"[DEBUG] card #{num} image cache key={key} cached={cached}")
+                                if cached is None:
+                                    try_img, try_mime = extract_first_image_from_rtf(texto_raw)
+                                    img_available = bool(try_img and try_mime)
+                                    print(f"[DEBUG] card #{num} extract tried -> has_image={img_available} mime={try_mime}")
+                                    # gravar no cache booleano
+                                    set_image_flag_for_content(texto_raw, img_available)
+                                else:
+                                    img_available = bool(cached)
+                                    print(f"[DEBUG] card #{num} using cached value -> has_image={img_available}")
+                            except Exception as e:
                                 img_available = False
+                                print(f"[DEBUG] card #{num} image detection error: {e}")
 
                             btn_img = ui.button('Imagem', on_click=_open_image_dialog_local).classes('secondary')
                             if not img_available:
-                                # desabilitar e mostrar tooltip explicando
+                                # se o cache explicitamente dizer que não há imagem, oferecemos opção de re-testar
                                 try:
-                                    btn_img.props('disabled', True)
-                                    ui.tooltip(btn_img, 'Nenhuma imagem detectada neste texto')
+                                    if cached is False:
+                                        def _open_image_dialog_local_retest(_, rtf=texto_raw):
+                                            # forçar reextração ignorando o cache; atualizar flag
+                                            try:
+                                                img_b, mime = extract_first_image_from_rtf(rtf)
+                                            except Exception:
+                                                img_b, mime = None, None
+                                            # atualizar flag conforme resultado
+                                            try:
+                                                set_image_flag_for_content(rtf, bool(img_b and mime))
+                                            except Exception:
+                                                pass
+                                            dlg = ui.dialog()
+                                            with dlg:
+                                                if img_b and mime:
+                                                    b64 = base64.b64encode(img_b).decode()
+                                                    ui.image(f"data:{mime};base64,{b64}").style("max-width:100%;max-height:60vh;object-fit:contain;")
+                                                else:
+                                                    ui.label("[Imagem] — não foi possível extrair a imagem").classes("text-sm text-gray-600")
+                                                with ui.row().classes('w-full justify-end gap-2'):
+                                                    ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('secondary')
+                                            dlg.open()
+
+                                        ui.button('Re-testar imagem', on_click=_open_image_dialog_local_retest).classes('secondary')
+                                        ui.tooltip(btn_img, 'Cache indica ausência de imagem — clique em Re-testar imagem para forçar reextração')
+                                        # marcar o botão principal como desabilitado visualmente
+                                        try:
+                                            btn_img.props('disabled', True)
+                                        except Exception:
+                                            pass
+                                    else:
+                                        # sem cache explícito e sem imagem encontrada: desabilitar botão
+                                        btn_img.props('disabled', True)
+                                        ui.tooltip(btn_img, 'Nenhuma imagem detectada neste texto')
                                 except Exception:
                                     # fallback: apenas esconder o botão se props falhar
                                     try:
@@ -875,6 +976,72 @@ def show_kanban():
                             ui.markdown(f"**Data/Hora:** {data_str}  \n\n **Usuário:** {usuario}")
                             # descrição em markdown (texto limpo)
                             ui.markdown(texto)
+
+                            # botão Imagem (apenas se houver imagem extraível no TextoIteracao)
+                            rtf_content = h.get('TextoIteracao') or ''
+                            img_exists = False
+                            try:
+                                cached = get_image_flag_for_content(rtf_content)
+                                key = _image_cache_key(rtf_content)
+                                print(f"[DEBUG] history image cache key={key} cached={cached}")
+                                if cached is None:
+                                    ib, imime = extract_first_image_from_rtf(rtf_content)
+                                    img_exists = bool(ib and imime)
+                                    print(f"[DEBUG] history extract tried -> has_image={img_exists} mime={imime}")
+                                    set_image_flag_for_content(rtf_content, img_exists)
+                                else:
+                                    img_exists = bool(cached)
+                                    print(f"[DEBUG] history using cached value -> has_image={img_exists}")
+                            except Exception as e:
+                                img_exists = False
+                                print(f"[DEBUG] history image detection error: {e}")
+
+                            if img_exists:
+                                def _open_history_image(_=None, rtf=rtf_content):
+                                    try:
+                                        img_b, mime = extract_first_image_from_rtf(rtf)
+                                    except Exception:
+                                        img_b, mime = None, None
+                                    dlg = ui.dialog()
+                                    with dlg:
+                                        if img_b and mime:
+                                            b64 = base64.b64encode(img_b).decode()
+                                            ui.image(f"data:{mime};base64,{b64}").style("max-width:100%;max-height:60vh;object-fit:contain;")
+                                        else:
+                                            ui.label("[Imagem] — não foi possível extrair a imagem").classes("text-sm text-gray-600")
+                                        with ui.row().classes('w-full justify-end gap-2'):
+                                            ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('secondary')
+                                    dlg.open()
+
+                                ui.button('Imagem', on_click=_open_history_image).classes('secondary')
+                            else:
+                                # se o cache indicou ausência, permitir re-teste manual
+                                try:
+                                    if cached is False:
+                                        def _open_history_image_retest(_=None, rtf=rtf_content):
+                                            try:
+                                                img_b, mime = extract_first_image_from_rtf(rtf)
+                                            except Exception:
+                                                img_b, mime = None, None
+                                            try:
+                                                set_image_flag_for_content(rtf, bool(img_b and mime))
+                                            except Exception:
+                                                pass
+                                            dlg = ui.dialog()
+                                            with dlg:
+                                                if img_b and mime:
+                                                    b64 = base64.b64encode(img_b).decode()
+                                                    ui.image(f"data:{mime};base64,{b64}").style("max-width:100%;max-height:60vh;object-fit:contain;")
+                                                else:
+                                                    ui.label("[Imagem] — não foi possível extrair a imagem").classes("text-sm text-gray-600")
+                                                with ui.row().classes('w-full justify-end gap-2'):
+                                                    ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('secondary')
+                                            dlg.open()
+
+                                        ui.button('Re-testar imagem', on_click=_open_history_image_retest).classes('secondary')
+                                        ui.tooltip(None, 'Cache indica ausência de imagem — clique em Re-testar imagem para forçar reextração')
+                                except Exception:
+                                    pass
                     # botão fechar centralizado
                     with ui.row().classes("w-full justify-center mt-4"):
                         ui.button("Fechar", on_click=lambda _: dlg.close()).classes("primary")
