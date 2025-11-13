@@ -691,6 +691,25 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
     ui = _ui
     app = _app
 
+    # registrar handler de shutdown para limpar o cache automaticamente
+    try:
+        def _on_shutdown():
+            try:
+                removed = clean_cache()
+                print(f"[DEBUG] clean_cache on shutdown removed {removed} item(s)")
+            except Exception as e:
+                print(f"[DEBUG] clean_cache on shutdown error: {e}")
+
+        # FastAPI/Starlette suporta add_event_handler para 'shutdown'
+        try:
+            app.add_event_handler("shutdown", _on_shutdown)
+        except Exception:
+            # caso a aplicação NiceGUI não exponha add_event_handler em alguma versão,
+            # simplesmente ignoramos e não quebramos a inicialização.
+            pass
+    except Exception:
+        pass
+
     # montar rota estática para servir imagens temporárias
     # registrar endpoint dinâmico para servir imagens em memória: /_temp_img/{key}
     try:
@@ -706,6 +725,15 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
 
     # iniciar limpeza periódica do cache
     try:
+        # executar uma limpeza imediata ao iniciar a aplicação (garante limpeza em ambientes
+        # onde o módulo é importado e start_app é chamado sem passar pelo guard __main__)
+        try:
+            removed_on_start = clean_cache()
+            if removed_on_start:
+                print(f"[DEBUG] clean_cache at startup removed {removed_on_start} item(s)")
+        except Exception:
+            pass
+
         start_periodic_cache_clean()
     except Exception:
         pass
@@ -786,7 +814,7 @@ def show_login():
             with ui.column().classes("items-center w-full max-w-sm gap-2"):
                 # cartão com fundo e sombra ao redor do formulário para destaque
                 with ui.card().classes("w-full p-6 rounded shadow-md").style("background:#ffffff;"):
-                    ui.markdown(f"## {APP_NAME} — Login").classes("text-center")
+                    ui.markdown(f"## {APP_NAME}  Login").classes("text-center")
                     # inputs responsivos para caberem dentro do cartão
                     username = ui.input("Usuário").classes("w-full").props("autofocus")
                     password = ui.input("Senha", password=True).classes("w-full")
@@ -830,12 +858,13 @@ def show_kanban():
             with ui.column().classes("items-start"):
                 ui.label(
                     f"🗂️ {sanitize_text(APP_NAME)} — "
-                    f"{sanitize_text(logged_user.get('NomeUsuario', ''))}"
+                    f"Usuário: {sanitize_text(logged_user.get('NomeUsuario', ''))}"
                 ).classes("text-2xl font-bold")
                 ui.label(f"{len(cards_data)} cards carregados").classes("text-sm text-gray-500")
 
             # botão de logout posicionado à direita do cabeçalho
-            # botões de utilitários: Limpar cache e Atualizar cards
+            # botões de utilitários
+            # Atualizar cards
             def _do_clean_cache(_=None):
                 # abrir diálogo de confirmação antes de limpar o cache
                 dlg = ui.dialog()
@@ -902,9 +931,8 @@ def show_kanban():
                 except Exception as e:
                     ui.notify(f"Erro ao atualizar cards: {e}", color="negative")
 
-            ui.button("Limpar cache", on_click=_do_clean_cache).classes("secondary")
-            ui.button("Atualizar cards", on_click=_do_refresh).classes("secondary")
-            ui.button("Logout", on_click=lambda _: show_login()).classes("secondary")
+            ui.button("Atualizar cards", on_click=_do_refresh).classes("bg-green-600 text-white").style("background:#10b981 !important;color:#ffffff !important;")
+            ui.button("Logout", on_click=lambda _: show_login()).classes("bg-orange-500 text-white").style("background:#f97316 !important;color:#ffffff !important;")
 
     # board responsivo: permite overflow-x em telas pequenas e distribui colunas em telas maiores
     with root:
@@ -1196,63 +1224,9 @@ def show_kanban():
                                 img_available = False
                                 print(f"[DEBUG] card #{num} image detection error: {e}")
 
-                            btn_img = ui.button("Imagem", on_click=_open_image_dialog_local).classes("secondary")
-                            if not img_available:
-                                # se o cache explicitamente dizer que não há imagem, oferecemos opção de re-testar
-                                try:
-                                    if cached is False:
-
-                                        def _open_image_dialog_local_retest(_, rtf=texto_raw):
-                                            # forçar reextração ignorando o cache; atualizar flag
-                                            try:
-                                                img_b, mime = extract_first_image_from_rtf(rtf)
-                                            except Exception:
-                                                img_b, mime = None, None
-                                            # atualizar flag conforme resultado
-                                            try:
-                                                set_image_flag_for_content(rtf, bool(img_b and mime))
-                                            except Exception:
-                                                pass
-                                            dlg = ui.dialog()
-                                            with dlg:
-                                                if img_b and mime:
-                                                    b64 = base64.b64encode(img_b).decode()
-                                                    ui.image(f"data:{mime};base64,{b64}").style(IMG_STYLE)
-                                                else:
-                                                    ui.label("[Imagem] — não foi possível extrair a imagem").classes(
-                                                        "text-sm text-gray-600"
-                                                    )
-                                                with ui.row().classes("w-full justify-end gap-2"):
-                                                    ui.button("Fechar", on_click=lambda _=None: dlg.close()).classes(
-                                                        "secondary"
-                                                    )
-                                            dlg.open()
-
-                                        ui.button("Re-testar imagem", on_click=_open_image_dialog_local_retest).classes(
-                                            "secondary"
-                                        )
-                                        ui.tooltip(
-                                            btn_img,
-                                            (
-                                                "Cache indica ausência de imagem — clique em "
-                                                "Re-testar imagem para forçar reextração"
-                                            ),
-                                        )
-                                        # marcar o botão principal como desabilitado visualmente
-                                        try:
-                                            btn_img.props("disabled", True)
-                                        except Exception:
-                                            pass
-                                    else:
-                                        # sem cache explícito e sem imagem encontrada: desabilitar botão
-                                        btn_img.props("disabled", True)
-                                        ui.tooltip(btn_img, "Nenhuma imagem detectada neste texto")
-                                except Exception:
-                                    # fallback: apenas esconder o botão se props falhar
-                                    try:
-                                        btn_img.visible = False
-                                    except Exception:
-                                        pass
+                            # mostrar apenas o botão "Imagem" quando de fato há uma imagem extraível
+                            if img_available:
+                                ui.button("Imagem", on_click=_open_image_dialog_local).classes("secondary")
 
                             # mover
                             options = [name for (name, _, _) in COLUMNS]
@@ -1280,7 +1254,7 @@ def show_kanban():
                                             ui.notify("Erro ao atualizar situação", color="negative")
                                     render_board()
 
-                            ui.button("Mover", on_click=do_move).classes("secondary")
+                            ui.button("Mover", on_click=do_move).classes("bg-purple-600 text-white").style("background:#7c3aed !important;color:#ffffff !important;")
 
     def show_history_dialog(num_atendimento):
         hist = fetch_history(num_atendimento)
@@ -1470,7 +1444,8 @@ def show_kanban():
                                                 ui.html(img_html, sanitize=False)
                                                 link_html = (
                                                     f'<div style="margin-top:8px;">'
-                                                    f'<a href="{rel_url}" target="_blank" rel="noopener">'
+                                                    f'<a href="{rel_url}" target="_blank" rel="noopener" '
+                                                    f'style="color:#ffd700; text-decoration:underline;">'
                                                     'Abrir imagem em nova aba</a></div>'
                                                 )
                                                 ui.html(link_html, sanitize=False)
@@ -1493,86 +1468,6 @@ def show_kanban():
                                     dlg.open()
 
                                 ui.button("Imagem", on_click=_open_history_image).classes("secondary")
-                            else:
-                                # se o cache indicou ausência, permitir re-teste manual
-                                try:
-                                    if cached is False:
-
-                                        def _open_history_image_retest(_=None, rtf=rtf_content):
-                                            try:
-                                                key = _image_cache_key(rtf)
-                                                print(f"[DEBUG] history re-test image key={key}")
-                                            except Exception:
-                                                pass
-
-                                            try:
-                                                img_b, mime = extract_first_image_from_rtf(rtf)
-                                                # split debug output into two prints to avoid long source lines
-                                                print("[DEBUG] history re-test -> has_image=", bool(img_b and mime))
-                                                print(f"mime={mime} bytes_len={len(img_b) if img_b else 0}")
-                                            except Exception as e:
-                                                print(f"[DEBUG] history re-test extract error: {e}")
-                                                img_b, mime = None, None
-                                            try:
-                                                set_image_flag_for_content(rtf, bool(img_b and mime))
-                                            except Exception:
-                                                pass
-                                            dlg = ui.dialog()
-                                            dlg.classes("w-full max-w-6xl")
-                                            with dlg:
-                                                if img_b and mime:
-                                                    key = _image_cache_key(rtf)
-                                                    # debug: log expected on-disk path before trying to save (retest)
-                                                    try:
-                                                        ext = _ext_for_mime(mime)
-                                                        expected_path = _temp_image_path_for_key(key, ext)
-                                                        msg = (
-                                                            f"[DEBUG] history re-test will write temp image path={expected_path} "
-                                                            f"exists_before={expected_path.exists()} ext={ext}"
-                                                        )
-                                                        print(msg)
-                                                        try:
-                                                            _append_image_debug(msg)
-                                                        except Exception:
-                                                            pass
-                                                    except Exception:
-                                                        pass
-                                                    url = save_temp_image_and_get_url(key, img_b, mime)
-                                                    if url:
-                                                        try:
-                                                            present = temp_image_exists_on_disk(key)
-                                                            import os
-
-                                                            pre = "[DEBUG] creating ui.image (retest): pid="
-                                                            mid = f"{os.getpid()} for key={key} url={url} "
-                                                            post = f"present_on_disk={present}"
-                                                            print(pre + mid + post)
-                                                        except Exception:
-                                                            pass
-                                                        # Use relative URL to avoid cross-host issues
-                                                        rel_url = url
-                                                        img_html = f'<img src="{rel_url}" style="{IMG_STYLE}">'
-                                                        ui.html(img_html, sanitize=False)
-                                                        link_html = (
-                                                            '<div style="margin-top:8px;">'
-                                                            f'<a href="{rel_url}" target="_blank" rel="noopener">'
-                                                            'Abrir imagem em nova aba</a></div>'
-                                                        )
-                                                        ui.html(link_html, sanitize=False)
-                                            dlg.open()
-
-                                        ui.button("Re-testar imagem", on_click=_open_history_image_retest).classes(
-                                            "secondary"
-                                        )
-                                        ui.tooltip(
-                                            None,
-                                            (
-                                                "Cache indica ausência de imagem — clique em "
-                                                "Re-testar imagem para forçar reextração"
-                                            ),
-                                        )
-                                except Exception:
-                                    pass
                     # botão fechar centralizado
                     with ui.row().classes("w-full justify-center mt-4"):
                         ui.button("Fechar", on_click=lambda _: dlg.close()).classes("primary")
