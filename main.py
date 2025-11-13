@@ -318,23 +318,70 @@ SELECT
         SELECT MAX(I2.RegInclusao)
         FROM AtendimentoIteracao I2 WITH (NOLOCK)
         WHERE I2.NumAtendimento = A.NumAtendimento
-          AND I2.Desdobramento = 0
+          AND I2.Desdobramento = A.Desdobramento   
     ) AS UltimaIteracao,
     (
         SELECT TOP 1 CONVERT(NVARCHAR(MAX), I3.TextoIteracao)
         FROM AtendimentoIteracao I3 WITH (NOLOCK)
         WHERE I3.NumAtendimento = A.NumAtendimento
-          AND I3.Desdobramento = 0
+          AND I3.Desdobramento = A.Desdobramento   
         ORDER BY I3.NumIteracao DESC
     ) AS TextoIteracao
-FROM CNSAtendimento A WITH (NOLOCK)
+FROM CNSAtendimento A  
 INNER JOIN CnsClientes C WITH (NOLOCK)
     ON A.CodCliente = C.CodCliente
     AND A.CodEmpresa = C.CodEmpresa
 WHERE
     A.AssuntoAtendimento = N'Implantação'
     AND A.Situacao = 0
-ORDER BY C.NomeCliente;
+    AND A.Desdobramento = 0  
+ORDER BY
+    C.NomeCliente;
+
+"""
+
+# SQL para listagem de implantações finalizadas (usada pela página/diálogo de "Implantações finalizadas")
+SQL_ATENDIMENTOS_IMPLANTACAO_FINALIZADA = """
+SELECT
+    A.NumAtendimento,
+    A.AssuntoAtendimento,
+    A.RegInclusao AS Abertura,
+    A.CodCliente,
+    C.NomeCliente,
+    A.Situacao,
+    U.NomeUsuario,
+    MAX(I.RegInclusao) AS UltimaIteracao,
+    (
+        SELECT TOP 1 CONVERT(NVARCHAR(MAX), I2.TextoIteracao)
+        FROM AtendimentoIteracao I2 WITH (NOLOCK)
+        WHERE I2.NumAtendimento = A.NumAtendimento
+          AND I2.Desdobramento = 0
+        ORDER BY I2.NumIteracao DESC
+    ) AS TextoIteracao
+FROM CNSAtendimento A -- sem NOLOCK aqui
+INNER JOIN CnsClientes C WITH (NOLOCK)
+    ON A.CodCliente = C.CodCliente
+    AND A.CodEmpresa = C.CodEmpresa
+INNER JOIN Usuarios U WITH (NOLOCK)
+    ON A.CodUsuario = U.CodUsuario
+INNER JOIN AtendimentoIteracao I WITH (NOLOCK)
+    ON I.NumAtendimento = A.NumAtendimento
+    AND I.Desdobramento = A.Desdobramento   
+WHERE
+    A.AssuntoAtendimento = N'Implantação'
+    AND A.Situacao = 1                     
+    AND A.Desdobramento = 0                 
+GROUP BY
+    A.NumAtendimento,
+    A.AssuntoAtendimento,
+    A.RegInclusao,
+    A.CodCliente,
+    C.NomeCliente,
+    A.Situacao,
+    U.NomeUsuario
+ORDER BY
+    C.NomeCliente;
+
 """
 
 SQL_ATENDIMENTO_ITERACAO = """
@@ -357,6 +404,29 @@ def fetch_kanban_cards():
     cur.close()
     conn.close()
     return [dict(zip(cols, row)) for row in rows]
+
+
+def fetch_implantacoes_finalizadas():
+    """Busca atendimentos de implantação com Situacao = 1 (finalizados).
+
+    Retorna lista de dicionários compatível com a UI usada pela página/diálogo
+    de 'Implantações finalizadas'.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        cur.execute(SQL_ATENDIMENTOS_IMPLANTACAO_FINALIZADA)
+        cols = [c[0] for c in cur.description]
+        rows = cur.fetchall()
+        return [dict(zip(cols, row)) for row in rows]
+    except Exception:
+        return []
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
 
 
 def fetch_history(num_atendimento):
@@ -718,6 +788,95 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
     except Exception as e:
         print(f"[DEBUG] Failed to register dynamic temp image endpoint: {e}")
 
+    # rota fallback (HTML) para 'Implantações finalizadas'
+    # Evita usar `ui.page` (que não pode ser misturado com UI no escopo global).
+    try:
+        from fastapi.responses import HTMLResponse
+
+        def _implantacoes_finalizadas_html(request: Request):
+            try:
+                # obter filtro de ano via query param
+                year_param = request.query_params.get("year")
+                try:
+                    year_filter = int(year_param) if year_param else None
+                except Exception:
+                    year_filter = None
+
+                cards = fetch_implantacoes_finalizadas() or []
+
+                # helper para converter valores possivelmente datetime/str em date
+                def _to_dt(v):
+                    if v is None:
+                        return None
+                    if isinstance(v, datetime):
+                        return v
+                    s = str(v)
+                    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                        try:
+                            return datetime.strptime(s, fmt)
+                        except Exception:
+                            continue
+                    return None
+
+                # coletar anos disponíveis (baseado em Abertura)
+                years = set()
+                processed = []
+                for c in cards:
+                    abertura = _to_dt(c.get("Abertura"))
+                    if abertura:
+                        years.add(abertura.year)
+                    processed.append((c, abertura))
+
+                years_list = sorted(years)
+
+                # aplicar filtro por ano (se presente)
+                if year_filter:
+                    processed = [t for t in processed if t[1] and t[1].year == year_filter]
+
+                rows = []
+                for c, abertura in processed:
+                    num = c.get('NumAtendimento')
+                    nome = sanitize_text(c.get('NomeCliente') or '-')
+                    analista = sanitize_text(c.get('NomeUsuario') or '-')
+                    ultima = _to_dt(c.get('UltimaIteracao'))
+                    abertura_str = abertura.strftime('%Y-%m-%d') if abertura else '-'
+                    ultima_str = ultima.strftime('%Y-%m-%d %H:%M:%S') if ultima else '-'
+                    periodo = ''
+                    try:
+                        if abertura and ultima:
+                            periodo = f"Período de implantação: {(ultima - abertura).days} dias"
+                    except Exception:
+                        periodo = ''
+                    rows.append(
+                        f"<li><strong>{nome}</strong> #{num} — Abertura: {abertura_str} — Última interação: {ultima_str}"
+                        f"<br/><small>{periodo} — Analista: {analista}</small></li>"
+                    )
+
+                # montar formulário de filtro por ano
+                options_html = '<option value="">Todos</option>'
+                for y in years_list:
+                    sel = ' selected' if (year_filter and y == year_filter) else ''
+                    options_html += f'<option value="{y}"{sel}>{y}</option>'
+
+                body = "<ul>" + "".join(rows) + "</ul>" if rows else "<p>Nenhum atendimento encontrado.</p>"
+                html = (
+                    "<html><head><meta charset=\"utf-8\"><title>Implantações finalizadas</title></head>"
+                    "<body style=\"font-family: Arial, Helvetica, sans-serif; padding:16px;\">"
+                    "<h1>Implantações finalizadas</h1>"
+                    "<form method=\"get\" style=\"margin-bottom:12px;\">"
+                    f"Filtrar por ano: <select name=\"year\">{options_html}</select> <button type=\"submit\">Aplicar</button></form>"
+                    f"{body}"
+                    "<p style=\"margin-top:16px;\"><a href=\"/\">Voltar ao Kanban</a></p>"
+                    "</body></html>"
+                )
+                return HTMLResponse(html)
+            except Exception as e:
+                return HTMLResponse(f"<html><body><h1>Erro</h1><pre>{e}</pre></body></html>", status_code=500)
+
+        app.add_api_route("/implantacoes_finalizadas", _implantacoes_finalizadas_html, methods=["GET"])
+    except Exception:
+        pass
+
     # criar contêiner raiz e footer
     root = ui.element("div").classes("w-full p-4")
     footer = ui.footer()
@@ -932,6 +1091,146 @@ def show_kanban():
                     ui.notify(f"Erro ao atualizar cards: {e}", color="negative")
 
             ui.button("Atualizar cards", on_click=_do_refresh).classes("bg-green-600 text-white").style("background:#10b981 !important;color:#ffffff !important;")
+            def _open_implantacoes_dialog(_=None):
+                try:
+                    cards = fetch_implantacoes_finalizadas() or []
+                except Exception:
+                    cards = []
+                dlg = ui.dialog()
+                dlg.classes('w-full max-w-6xl')
+                with dlg:
+                    # cabeçalho do diálogo: título, filtro por ano e botão fechar
+                    # header será construído após coletar os anos disponíveis para o select
+
+                        # preparar filtro por ano (baseado na data de abertura)
+                        def _to_dt(v):
+                            if v is None:
+                                return None
+                            if isinstance(v, datetime):
+                                return v
+                            s = str(v)
+                            for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                                try:
+                                    return datetime.strptime(s, fmt)
+                                except Exception:
+                                    continue
+                            return None
+
+                        years = set()
+                        processed = []
+                        for c in cards:
+                            abertura = _to_dt(c.get('Abertura'))
+                            if abertura:
+                                years.add(abertura.year)
+                            processed.append((c, abertura))
+
+
+                        # ordenar anos em ordem decrescente para mostrar o mais recente primeiro
+                        years_list = sorted(years, reverse=True)
+                        options = [""] + [str(y) for y in years_list]
+
+                        # Cabeçalho do diálogo: título, select de filtro por ano, total e botão fechar
+                        with ui.row().classes('items-center justify-between gap-4'):
+                            ui.label('Implantações finalizadas').classes('text-2xl font-bold')
+                            # controles: select e total centralizados verticalmente
+                            with ui.column().classes('items-center gap-1'):
+                                # label customizado acima do select para controlar alinhamento
+                                ui.label('Filtrar por ano').classes('text-sm text-white').style('display:block;text-align:center;margin-bottom:4px;')
+                                # select nativo (oculto) usado como fonte de verdade para o valor;
+                                # criaremos um dropdown customizado em HTML para permitir centralizar as opções
+                                year_select = ui.select(
+                                    options,
+                                    value="",
+                                    on_change=lambda _=None: render_cards(),
+                                ).classes('w-48').props('id="year_filter_select"').style('display:none;')
+
+                                # tornar o select nativo visível/acesível e injetar CSS simples
+                                try:
+                                    # remover display:none para garantir acessibilidade
+                                    year_select.style('display:block;text-align:center;')
+                                    # adicionar CSS para centralizar o texto do select
+                                    ui.html(
+                                        '<style>#year_filter_select { text-align:center; appearance:none; -moz-appearance:none; -webkit-appearance:none; text-align-last:center; -moz-text-align-last:center; } #year_filter_select option { text-align:center; }</style>',
+                                        sanitize=False,
+                                    )
+                                except Exception:
+                                    pass
+                                # total abaixo do select (texto escuro e centralizado)
+                                total_label = ui.label('Total: 0').classes('text-sm text-white').style('display:block;text-align:center;')
+                            ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('primary')
+
+                        # injetar CSS local para centralizar o label e as opções do select
+                        try:
+                            ui.html(
+                                '<style>#year_filter_select, #year_filter_select option { text-align:center; } label[for="year_filter_select"] { display:block; text-align:center; }</style>',
+                                sanitize=False,
+                            )
+                        except Exception:
+                            pass
+
+                        # container onde os cards serão renderizados dinamicamente
+                        cards_container = ui.column().classes('w-full')
+
+                        def render_cards():
+                            # ler seleção e filtrar
+                            sel = year_select.value
+                            try:
+                                yf = int(sel) if sel else None
+                            except Exception:
+                                yf = None
+                            try:
+                                cards_container.clear()
+                            except Exception:
+                                pass
+
+                            # construir lista filtrada, ordenar por ÚltimaIteração (desc) e atualizar total
+                            to_show = []
+                            for c, abertura in processed:
+                                if yf and (not abertura or abertura.year != yf):
+                                    continue
+                                to_show.append((c, abertura))
+                            try:
+                                # ordenar por UltimaIteracao (campo pode ser string ou datetime)
+                                to_show.sort(
+                                    key=lambda tup: (_to_dt((tup[0] or {}).get('UltimaIteracao')) or datetime.min),
+                                    reverse=True,
+                                )
+                            except Exception:
+                                pass
+                            try:
+                                total_label.set_text(f"Total: {len(to_show)}")
+                            except Exception:
+                                pass
+
+                            for c, abertura in to_show:
+                                num = c.get('NumAtendimento')
+                                nome = sanitize_text(c.get('NomeCliente') or '-')
+                                ultima = _to_dt(c.get('UltimaIteracao'))
+                                abertura_str = abertura.strftime('%Y-%m-%d') if abertura else '-'
+                                ultima_str = ultima.strftime('%Y-%m-%d %H:%M:%S') if ultima else '-'
+                                periodo = ''
+                                try:
+                                    if abertura and ultima:
+                                        periodo = f"Período de implantação: {(ultima - abertura).days} dias"
+                                except Exception:
+                                    periodo = ''
+                                with cards_container:
+                                    with ui.card().classes('mb-2 p-3 w-full'):
+                                        ui.row().classes('items-center justify-between')
+                                        ui.label(f"{nome}").classes('font-semibold')
+                                        ui.label(f"#{num}").classes('text-sm text-gray-600')
+                                        ui.label(f"Abertura: {abertura_str}").classes('text-xs text-gray-500')
+                                        ui.label(f"Conclusão: {ultima_str}").classes('text-xs text-gray-500')
+                                        ui.label(periodo).classes('text-sm text-gray-600')
+                                        # mostrar analista (NomeUsuario)
+                                        analista_lbl = sanitize_text(c.get('NomeUsuario') or '-')
+                                        ui.label(f"Analista: {analista_lbl}").classes('text-sm text-gray-600')
+
+                        # renderizar inicialmente (sem filtro)
+                        render_cards()
+                dlg.open()
+
+            ui.button("Implantações finalizadas", on_click=_open_implantacoes_dialog).classes("bg-red-600 text-white").style("background:#ef4444 !important;color:#ffffff !important;")
             ui.button("Logout", on_click=lambda _: show_login()).classes("bg-orange-500 text-white").style("background:#f97316 !important;color:#ffffff !important;")
 
     # board responsivo: permite overflow-x em telas pequenas e distribui colunas em telas maiores
