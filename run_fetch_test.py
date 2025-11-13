@@ -33,10 +33,10 @@ conn = get_db_connection()
 cur = conn.cursor()
 cur.execute(SQL)
 rows = cur.fetchall()
-print('Fetched rows count via get_db_connection():', len(rows))
+print("Fetched rows count via get_db_connection():", len(rows))
 if rows:
     cols = [c[0] for c in cur.description]
-    print('Columns:', cols)
-    print('First row sample:', dict(zip(cols, list(rows[0]))))
+    print("Columns:", cols)
+    print("First row sample:", dict(zip(cols, list(rows[0]))))
 cur.close()
 conn.close()

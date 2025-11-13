@@ -16,3 +16,7 @@ __pycache__/
 
 # Config VSCode
 .vscode/
+
+# Ignore imagens temporárias extraídas (mas manter o README dentro do diretório)
+/cache_images/tmp/*
+!/cache_images/tmp/README.md

@@ -1,9 +1,11 @@
 import unittest
+
 from rtf_utils import limpar_rtf
+
 
 class TestRtfUtils(unittest.TestCase):
     def test_plain_rtf(self):
-        rtf = r"{\rtf1\ansi This is plain text}" 
+        rtf = r"{\rtf1\ansi This is plain text}"
         out = limpar_rtf(rtf)
         self.assertIn("This is plain text", out)
 
@@ -34,5 +36,6 @@ class TestRtfUtils(unittest.TestCase):
         out = limpar_rtf(data)
         self.assertIn("Olá", out)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     unittest.main()

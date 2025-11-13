@@ -2,20 +2,29 @@
 # Adiar import de nicegui para evitar efeitos colaterais durante import/module load
 # (ex.: leitura do registro no Windows feita por algumas libs). As variáveis serão
 # inicializadas em start_app().
+# pyodbc is used by authentication.get_db_connection; import removed here to
+# avoid an unused import at module top-level.
+import base64
+import hashlib
+import os
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
+
+from starlette.exceptions import HTTPException
+from starlette.requests import Request
+from starlette.responses import Response
+
+from authentication import get_db_connection, verify_user
+from rtf_utils import extract_first_image_from_rtf, limpar_rtf
+from version import APP_NAME, APP_VERSION
+
+# estilo reutilizável para imagens exibidas em diálogos (mantém linhas curtas)
+IMG_STYLE = "max-width:100%;max-height:60vh;object-fit:contain;display:block;"
+
 ui = None
 app = None
-from authentication import verify_user, get_db_connection
-from rtf_utils import limpar_rtf, extract_first_image_from_rtf
-import re
-import os
-import hashlib
-from pathlib import Path
-import time
-import threading
-from version import APP_NAME, APP_VERSION
-import pyodbc
-import base64
-from datetime import datetime
 
 
 def sanitize_text(value: object) -> str:
@@ -30,15 +39,233 @@ def sanitize_text(value: object) -> str:
     # decode bytes
     if isinstance(value, (bytes, bytearray)):
         try:
-            s = value.decode('utf-8')
+            s = value.decode("utf-8")
         except Exception:
-            s = value.decode('utf-8', errors='replace')
+            s = value.decode("utf-8", errors="replace")
     else:
         s = str(value)
 
     # remove surrogate codepoints which orjson rejects
-    cleaned = ''.join(ch for ch in s if not (0xD800 <= ord(ch) <= 0xDFFF))
+    cleaned = "".join(ch for ch in s if not (0xD800 <= ord(ch) <= 0xDFFF))
     return cleaned
+
+
+# diretório de cache de imagens (já usado para flags .hasimg)
+IMAGE_CACHE_DIR = Path(os.getenv("IMAGE_CACHE_DIR", "cache_images"))
+TEMP_IMAGE_SUBDIR = "tmp"
+IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# arquivo de log leve para mensagens de debug relacionadas a imagens temporárias.
+IMAGE_DEBUG_LOG = IMAGE_CACHE_DIR / "temp_img_debug.log"
+
+
+def _append_image_debug(msg: str):
+    """Append a timestamped debug line to IMAGE_DEBUG_LOG. Non-fatal on error."""
+    try:
+        ts = datetime.utcnow().isoformat() + "Z"
+        with open(IMAGE_DEBUG_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{ts} {msg}\n")
+    except Exception:
+        # best-effort logging only
+        pass
+
+
+def temp_image_exists_on_disk(key: str) -> bool:
+    """Return True if a temp image file for `key` exists on disk.
+
+    This is used instead of a process-local memory cache so the presence
+    check works correctly when running multiple workers.
+    """
+    try:
+        tmp_dir = IMAGE_CACHE_DIR / TEMP_IMAGE_SUBDIR
+        if not tmp_dir.exists():
+            return False
+        for p in tmp_dir.glob(f"{key}.*"):
+            try:
+                if p.is_file():
+                    return True
+            except Exception:
+                continue
+        return False
+    except Exception:
+        return False
+
+
+def temp_image_endpoint(request: Request, key: str):
+    """Starlette endpoint to serve temp images by key.
+
+    Note: annotate `request` as `Request` so FastAPI/Starlette injects it and doesn't treat
+    it as a query parameter.
+    """
+    try:
+        # Primary: always serve from disk when present. This avoids relying on
+        # process-local in-memory cache which is not shared across multiple
+        # workers. If the disk file is not found, fall back to memory as a
+        # last-resort (backwards-compatible).
+        try:
+            tmp_dir = IMAGE_CACHE_DIR / TEMP_IMAGE_SUBDIR
+            if tmp_dir.exists():
+                for p in tmp_dir.glob(f"{key}.*"):
+                    try:
+                        with open(p, "rb") as f:
+                            data = f.read()
+                        ext = p.suffix.lower()
+                        mime_guess = "application/octet-stream"
+                        if ext == ".png":
+                            mime_guess = "image/png"
+                        elif ext in (".jpg", ".jpeg"):
+                            mime_guess = "image/jpeg"
+                        elif ext == ".gif":
+                            mime_guess = "image/gif"
+                        elif ext == ".webp":
+                            mime_guess = "image/webp"
+                        print(
+                            f"[DEBUG] temp_image_endpoint: pid={os.getpid()} serving from disk path={p} "
+                            f"key={key} mime={mime_guess} bytes={len(data)}"
+                        )
+                        try:
+                            _append_image_debug(
+                                f"[DEBUG] temp_image_endpoint: pid={os.getpid()} serving from disk path={p} key={key} mime={mime_guess} bytes={len(data)}"
+                            )
+                        except Exception:
+                            pass
+                        return Response(content=data, media_type=mime_guess)
+                    except Exception:
+                        continue
+        except Exception as e:
+            print(f"[DEBUG] temp_image_endpoint disk lookup error for key={key}: {e}")
+            try:
+                _append_image_debug(f"[DEBUG] temp_image_endpoint disk lookup error for key={key}: {e}")
+            except Exception:
+                pass
+
+        # If not found on disk, return 404. We intentionally removed the
+        # process-local in-memory fallback because the app no longer relies on
+        # per-process memory cache for temp images.
+        print(f"[DEBUG] temp_image_endpoint: no entry on disk for key={key}")
+        try:
+            _append_image_debug(f"[DEBUG] temp_image_endpoint: no entry on disk for key={key}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=404)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[DEBUG] temp_image_endpoint error for key={key}: {e}")
+        try:
+            _append_image_debug(f"[DEBUG] temp_image_endpoint error for key={key}: {e}")
+        except Exception:
+            pass
+        raise HTTPException(status_code=500)
+
+
+def _temp_image_path_for_key(key: str, ext: str) -> Path:
+    tmp = IMAGE_CACHE_DIR / TEMP_IMAGE_SUBDIR
+    tmp.mkdir(parents=True, exist_ok=True)
+    return tmp / f"{key}{ext}"
+
+
+def _ext_for_mime(mime: str) -> str:
+    if not mime:
+        return ".bin"
+    m = mime.lower()
+    if "png" in m:
+        return ".png"
+    if "jpeg" in m or "jpg" in m:
+        return ".jpg"
+    if "gif" in m:
+        return ".gif"
+    if "webp" in m:
+        return ".webp"
+    return ".bin"
+
+
+def save_temp_image_and_get_url(key: str, img_bytes: bytes, mime: str) -> str:
+    """Persistir bytes em disco e retornar a URL pública /_temp_img/<key>.
+
+    Não grava mais em cache em memória por processo — isso evita inconsistências
+    quando a aplicação roda com múltiplos workers. A entrada em disco é usada
+    como fonte de verdade. O arquivo em disco será criado em
+    `cache_images/tmp/<key>.<ext>` e o caminho retornado é a URL relativa.
+    """
+    if not img_bytes or not mime or not key:
+        return None
+    try:
+        # persist to disk so the image is available to all workers
+        try:
+            # Attempt to normalize/flatten images that contain alpha channel to
+            # avoid transparent PNGs rendering invisible in the UI. This is
+            # best-effort: if Pillow is not installed or processing fails, we
+            # fall back to writing the original bytes.
+            processed_bytes = img_bytes
+            try:
+                from io import BytesIO
+
+                # Pillow: enable tolerant loading for truncated images so the
+                # app can still attempt to render/flatten partially-corrupt
+                # PNGs instead of raising OSError. This may produce visual
+                # artifacts but avoids hard failures.
+                from PIL import Image, ImageFile
+
+                ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+                buf = BytesIO(img_bytes)
+                img = Image.open(buf)
+                img.load()
+                has_alpha = img.mode in ("LA", "RGBA") or ("transparency" in img.info)
+                if has_alpha:
+                    # composite over white background
+                    bg = Image.new("RGB", img.size, (255, 255, 255))
+                    try:
+                        if img.mode in ("LA", "RGBA"):
+                            bg.paste(img, mask=img.split()[-1])
+                        else:
+                            # other cases where transparency is indicated in info
+                            bg.paste(img)
+                    except Exception:
+                        # fallback: paste without mask
+                        bg.paste(img)
+                    out_buf = BytesIO()
+                    bg.save(out_buf, format="PNG")
+                    processed_bytes = out_buf.getvalue()
+            except Exception:
+                # PIL not available or processing failed -> use original bytes
+                processed_bytes = img_bytes
+
+            ext = _ext_for_mime(mime)
+            p = _temp_image_path_for_key(key, ext)
+            with open(p, "wb") as f:
+                f.write(processed_bytes)
+            # update mtime to now
+            try:
+                os.utime(p, None)
+            except Exception:
+                pass
+            print(
+                f"[DEBUG] saved temp image to disk path={p} pid={os.getpid()} "
+                f"mime={mime} bytes={len(processed_bytes)}"
+            )
+            try:
+                _append_image_debug(
+                    f"[DEBUG] saved temp image to disk path={p} pid={os.getpid()} mime={mime} bytes={len(processed_bytes)}"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            print(f"[DEBUG] failed to persist temp image to disk for key={key}: {e}")
+            try:
+                _append_image_debug(f"[DEBUG] failed to persist temp image to disk for key={key}: {e}")
+            except Exception:
+                pass
+            return None
+        return f"/_temp_img/{key}"
+    except Exception as e:
+        print(f"[DEBUG] unexpected error saving temp image for key={key}: {e}")
+        try:
+            _append_image_debug(f"[DEBUG] unexpected error saving temp image for key={key}: {e}")
+        except Exception:
+            pass
+        return None
 
 
 def normalize_description(s: str) -> str:
@@ -49,10 +276,16 @@ def normalize_description(s: str) -> str:
     - remove palavras adjacentes duplicadas (ex: "DESCRICAO DESCRICAO" -> "DESCRICAO")
     """
     import re
+
     if not s:
         return ""
     # remover tokens de bookmark/marcadores comuns
-    s = re.sub(r"\b(?:DESCRICAO_TAREFA|DESCRICAOTAREFA|DESCRICAO|_dx_frag_StartFragment|_dx_frag_EndFragment)\b", "", s, flags=re.IGNORECASE)
+    s = re.sub(
+        r"\b(?:DESCRICAO_TAREFA|DESCRICAOTAREFA|DESCRICAO|_dx_frag_StartFragment|_dx_frag_EndFragment)\b",
+        "",
+        s,
+        flags=re.IGNORECASE,
+    )
     # colapsar sequências de pontuação e espaços (ex: ".; ; .; ;") em um único espaço
     s = re.sub(r"[\.\;,:\-_/\\\s]{2,}", " ", s)
     # remover repetições adjacentes de uma mesma palavra
@@ -60,8 +293,6 @@ def normalize_description(s: str) -> str:
     # colapsar espaços múltiplos e trim
     s = re.sub(r"\s+", " ", s).strip()
     return s
-
-# ---------- Configurações Kanban ----------
 COLUMNS = [
     ("A iniciar", "#d1d5db", 100),
     ("Visita pré-implantação", "#a3a3a3", 101),
@@ -107,13 +338,14 @@ ORDER BY C.NomeCliente;
 """
 
 SQL_ATENDIMENTO_ITERACAO = """
-SELECT AI.NumAtendimento, AI.Desdobramento, AI.NumIteracao, AI.DataIteracao, 
+SELECT AI.NumAtendimento, AI.Desdobramento, AI.NumIteracao, AI.DataIteracao,
        AI.HoraIteracao, AI.TextoIteracao, U.NomeUsuario, AI.NomeContato
 FROM AtendimentoIteracao AI WITH (NOLOCK)
 INNER JOIN Usuarios U WITH (NOLOCK) ON (AI.CodUsuario = U.CodUsuario)
 WHERE AI.NumAtendimento = ?
 ORDER BY AI.NumIteracao DESC;
 """
+
 
 # ---------- Funções de DB ----------
 def fetch_kanban_cards():
@@ -125,6 +357,7 @@ def fetch_kanban_cards():
     cur.close()
     conn.close()
     return [dict(zip(cols, row)) for row in rows]
+
 
 def fetch_history(num_atendimento):
     conn = get_db_connection()
@@ -168,9 +401,9 @@ def fetch_rdms(num_atendimento):
     try:
         # Ajuste: nomes das colunas reais na tabela CnsRDM são diferentes
         # Selecionamos colunas existentes e as aliasamos para manter a API usada pela UI
-        cur.execute(
-            "SELECT NumRDM AS IdRdm, NumAtendimento, Desdobramento, NomeTipoRDM, DescricaoRDM AS Descricao, RegInclusao, "
-            "CASE "
+        sql = (
+            "SELECT NumRDM AS IdRdm, NumAtendimento, Desdobramento, NomeTipoRDM, "
+            "DescricaoRDM AS Descricao, RegInclusao, CASE "
             "WHEN Situacao = 0 THEN 'Priorizar' "
             "WHEN Situacao = 1 THEN 'Executando' "
             "WHEN Situacao = 2 THEN 'Aguardando' "
@@ -198,9 +431,9 @@ def fetch_rdms(num_atendimento):
             "WHEN Situacao = 24 THEN 'Em edição' "
             "WHEN Situacao = 25 THEN 'Validação técnica' "
             "END AS SituacaoRDM "
-            "FROM CnsRDM WITH (NOLOCK) WHERE NumAtendimento = ? ORDER BY RegInclusao DESC",
-            (num_atendimento,)
+            "FROM CnsRDM WITH (NOLOCK) WHERE NumAtendimento = ? ORDER BY RegInclusao DESC"
         )
+        cur.execute(sql, (num_atendimento,))
         cols = [c[0] for c in cur.description]
         rows = cur.fetchall()
         result = [dict(zip(cols, row)) for row in rows]
@@ -208,28 +441,28 @@ def fetch_rdms(num_atendimento):
         for r in result:
             try:
                 # Limpa e sanitiza descrição (pode vir em RTF)
-                raw = r.get('Descricao') or ''
-                r['Descricao'] = sanitize_text(limpar_rtf(raw))
+                raw = r.get("Descricao") or ""
+                r["Descricao"] = sanitize_text(limpar_rtf(raw))
                 # remover ruídos e marcações repetidas deixadas pela conversão RTF
-                r['Descricao'] = normalize_description(r['Descricao'])
+                r["Descricao"] = normalize_description(r["Descricao"])
             except Exception:
-                r['Descricao'] = sanitize_text(r.get('Descricao') or '')
+                r["Descricao"] = sanitize_text(r.get("Descricao") or "")
             # sanitizar Desdobramento (preservar 0 em vez de transformá-lo em string vazia)
             try:
-                desdob_raw = r.get('Desdobramento')
-                r['Desdobramento'] = sanitize_text(desdob_raw) if desdob_raw is not None else ''
+                desdob_raw = r.get("Desdobramento")
+                r["Desdobramento"] = sanitize_text(desdob_raw) if desdob_raw is not None else ""
             except Exception:
-                r['Desdobramento'] = ''
+                r["Desdobramento"] = ""
             # sanitizar situação legível da RDM
             try:
-                r['SituacaoRDM'] = sanitize_text(r.get('SituacaoRDM') or '')
+                r["SituacaoRDM"] = sanitize_text(r.get("SituacaoRDM") or "")
             except Exception:
-                r['SituacaoRDM'] = ''
+                r["SituacaoRDM"] = ""
             # sanitizar NomeTipoRDM
             try:
-                r['NomeTipoRDM'] = sanitize_text(r.get('NomeTipoRDM') or '')
+                r["NomeTipoRDM"] = sanitize_text(r.get("NomeTipoRDM") or "")
             except Exception:
-                r['NomeTipoRDM'] = ''
+                r["NomeTipoRDM"] = ""
         return result
     except Exception:
         return []
@@ -237,8 +470,9 @@ def fetch_rdms(num_atendimento):
         try:
             cur.close()
             conn.close()
-        except:
+        except Exception:
             pass
+
 
 def update_situacao_on_move(num_atendimento, new_situacao_code):
     sql = "UPDATE CNSAtendimento SET Situacao = ? WHERE NumAtendimento = ?"
@@ -254,6 +488,7 @@ def update_situacao_on_move(num_atendimento, new_situacao_code):
         print("Erro atualizando situacao:", e)
         return False
 
+
 # ---------- UI ----------
 logged_user = {"CodUsuario": None, "NomeUsuario": None}
 
@@ -261,11 +496,11 @@ logged_user = {"CodUsuario": None, "NomeUsuario": None}
 root = None
 
 # diretório para armazenar imagens extraídas em cache
-CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache_images')
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache_images")
 os.makedirs(CACHE_DIR, exist_ok=True)
 # TTL do cache em dias (pode ser alterado via variável de ambiente CACHE_TTL_DAYS)
 try:
-    CACHE_TTL_DAYS = int(os.getenv('CACHE_TTL_DAYS', '30'))
+    CACHE_TTL_DAYS = int(os.getenv("CACHE_TTL_DAYS", "30"))
 except Exception:
     CACHE_TTL_DAYS = 30
 
@@ -281,7 +516,7 @@ def _image_cache_key(content) -> str:
         if isinstance(content, (bytes, bytearray)):
             b = bytes(content)
         else:
-            b = str(content).encode('utf-8', errors='ignore')
+            b = str(content).encode("utf-8", errors="ignore")
         return hashlib.sha256(b).hexdigest()
     except Exception:
         return None
@@ -291,7 +526,7 @@ def _image_flag_path_for_key(key: str) -> str:
     return os.path.join(CACHE_DIR, f"{key}.hasimg") if key else None
 
 
-def get_image_flag_for_content(content) -> 'bool|None':
+def get_image_flag_for_content(content) -> "bool|None":
     """Retorna True/False se o cache indicar presença de imagem, ou None se não houver cache."""
     try:
         key = _image_cache_key(content)
@@ -300,9 +535,9 @@ def get_image_flag_for_content(content) -> 'bool|None':
         p = _image_flag_path_for_key(key)
         if p and os.path.exists(p):
             try:
-                with open(p, 'r', encoding='utf-8') as f:
+                with open(p, "r", encoding="utf-8") as f:
                     v = f.read(1)
-                return v == '1'
+                return v == "1"
             except Exception:
                 return None
         return None
@@ -322,10 +557,11 @@ def set_image_flag_for_content(content, exists: bool):
         p = _image_flag_path_for_key(key)
         if not p:
             return
-        with open(p, 'w', encoding='utf-8') as f:
-            f.write('1' if exists else '0')
+        with open(p, "w", encoding="utf-8") as f:
+            f.write("1" if exists else "0")
     except Exception:
         pass
+
 
 def clean_cache():
     """Remove arquivos do cache mais antigos que CACHE_TTL_DAYS (baseado em mtime)."""
@@ -333,9 +569,11 @@ def clean_cache():
         now = time.time()
         ttl_seconds = CACHE_TTL_DAYS * 24 * 3600
         removed = 0
+        # remover flags e arquivos de cache no diretório principal
         for fname in os.listdir(CACHE_DIR):
             full = os.path.join(CACHE_DIR, fname)
             try:
+                # ignorar subdiretórios (p.ex. tmp/) nesta passagem
                 if not os.path.isfile(full):
                     continue
                 mtime = os.path.getmtime(full)
@@ -348,12 +586,54 @@ def clean_cache():
                         pass
             except Exception:
                 continue
+
+        # também limpar imagens temporárias salvas em cache_images/tmp/
+        try:
+            tmp_dir = os.path.join(CACHE_DIR, TEMP_IMAGE_SUBDIR)
+            if os.path.isdir(tmp_dir):
+                for tf in os.listdir(tmp_dir):
+                    tfull = os.path.join(tmp_dir, tf)
+                    try:
+                        if not os.path.isfile(tfull):
+                            continue
+                        mtime = os.path.getmtime(tfull)
+                        age = now - mtime
+                        if age > ttl_seconds:
+                            try:
+                                os.remove(tfull)
+                                removed += 1
+                            except Exception:
+                                pass
+                    except Exception:
+                        continue
+        except Exception:
+            pass
         if removed:
             print(f"[DEBUG] clean_cache: removed {removed} expired items from cache")
         return removed
     except Exception as e:
         print(f"[DEBUG] clean_cache error: {e}")
         return 0
+
+    # após remoção de arquivos, tentar remover subdiretórios vazios (ex: tmp/)
+    try:
+        for name in os.listdir(CACHE_DIR):
+            full = os.path.join(CACHE_DIR, name)
+            try:
+                # preservar o diretório TEMP_IMAGE_SUBDIR (p.ex. tmp/) mesmo que esteja vazio;
+                # apenas limpar seu conteúdo — não removemos esse diretório
+                if os.path.isdir(full) and name != TEMP_IMAGE_SUBDIR:
+                    # listar conteúdo; se vazio, remover diretório
+                    if not os.listdir(full):
+                        try:
+                            os.rmdir(full)
+                            print(f"[DEBUG] clean_cache: removed empty dir {full}")
+                        except Exception:
+                            pass
+            except Exception:
+                continue
+    except Exception:
+        pass
 
 
 def start_periodic_cache_clean(interval_hours=None):
@@ -365,7 +645,7 @@ def start_periodic_cache_clean(interval_hours=None):
     try:
         if interval_hours is None:
             try:
-                interval_hours = int(os.getenv('CACHE_CLEAN_INTERVAL_HOURS', '24'))
+                interval_hours = int(os.getenv("CACHE_CLEAN_INTERVAL_HOURS", "24"))
             except Exception:
                 interval_hours = 24
         interval = max(1, int(interval_hours))
@@ -383,14 +663,19 @@ def start_periodic_cache_clean(interval_hours=None):
         except Exception as e:
             print(f"[DEBUG] cache cleaner thread exiting: {e}")
 
-    t = threading.Thread(target=_worker, name='cache-cleaner', daemon=True)
+    t = threading.Thread(target=_worker, name="cache-cleaner", daemon=True)
     t.start()
     print(f"[DEBUG] Started cache cleaner thread with interval {interval} hour(s)")
+
+
+# NOTE: removed start_periodic_temp_cache_clean because the application no
+# longer maintains a process-local TEMP_IMAGE_CACHE for temp images.
 
 # footer será criado no start_app()
 footer = None
 
-def start_app(host: str = '0.0.0.0', port: int = 8080):
+
+def start_app(host: str = "0.0.0.0", port: int = 8080):
     """Inicializa NiceGUI de forma lazy e inicia a aplicação UI.
 
     Isso evita que a importação do módulo NiceGUI execute ações pesadas
@@ -398,21 +683,80 @@ def start_app(host: str = '0.0.0.0', port: int = 8080):
     """
     global ui, app, root, footer
     try:
-        from nicegui import ui as _ui, app as _app
+        from nicegui import app as _app
+        from nicegui import ui as _ui
     except Exception:
         # re-raise for visibility
         raise
     ui = _ui
     app = _app
 
+    # montar rota estática para servir imagens temporárias
+    # registrar endpoint dinâmico para servir imagens em memória: /_temp_img/{key}
+    try:
+        app.add_api_route("/_temp_img/{key}", temp_image_endpoint, methods=["GET"])
+        print("[DEBUG] Registered dynamic /_temp_img/{key} endpoint (in-memory)")
+    except Exception as e:
+        print(f"[DEBUG] Failed to register dynamic temp image endpoint: {e}")
+
     # criar contêiner raiz e footer
-    root = ui.element('div').classes("w-full p-4")
+    root = ui.element("div").classes("w-full p-4")
     footer = ui.footer()
-    footer.add_slot('info', f"<span>{APP_NAME} — v{APP_VERSION}</span>")
+    footer.add_slot("info", f"<span>{APP_NAME} — v{APP_VERSION}</span>")
 
     # iniciar limpeza periódica do cache
     try:
         start_periodic_cache_clean()
+    except Exception:
+        pass
+
+    # Nota: não iniciamos limpeza periódica de cache em memória.
+
+    # ambiente de teste: se TEST_NUM_ATENDIMENTO estiver definida, tentar
+    # pré-popular o cache temporário em disco com a imagem extraída da última
+    # iteração desse atendimento (útil para debug local e reprodução automática)
+    try:
+        test_num = os.getenv("TEST_NUM_ATENDIMENTO")
+        if test_num:
+            try:
+                na = int(test_num)
+                print(f"[DEBUG] TEST_NUM_ATENDIMENTO={na} detected: attempting to pre-populate temp image on disk")
+                latest = fetch_latest_iteration(na)
+                if latest and isinstance(latest, dict):
+                    rtf = latest.get("TextoIteracao") or ""
+                    try:
+                        img_b, mime = extract_first_image_from_rtf(rtf)
+                        if img_b and mime:
+                            key = _image_cache_key(rtf)
+                            # debug: log the expected on-disk path and whether it exists before write
+                            try:
+                                ext = _ext_for_mime(mime)
+                                expected_path = _temp_image_path_for_key(key, ext)
+                                msg = (
+                                    f"[DEBUG] TEST populate: will write temp image path={expected_path} "
+                                    f"exists_before={expected_path.exists()} ext={ext}"
+                                )
+                                print(msg)
+                                try:
+                                    _append_image_debug(msg)
+                                except Exception:
+                                    pass
+                            except Exception:
+                                pass
+                            url = save_temp_image_and_get_url(key, img_b, mime)
+                            set_image_flag_for_content(rtf, True)
+                            print(
+                                f"[DEBUG] TEST populate: saved temp image key={key} url={url} "
+                                f"mime={mime} bytes={len(img_b)}"
+                            )
+                        else:
+                            print("[DEBUG] TEST populate: no image extracted from latest iteration")
+                    except Exception as e:
+                        print(f"[DEBUG] TEST populate: extract error: {e}")
+                else:
+                    print(f"[DEBUG] TEST populate: no latest iteration found for {na}")
+            except Exception as e:
+                print(f"[DEBUG] TEST populate error: {e}")
     except Exception:
         pass
 
@@ -421,6 +765,7 @@ def start_app(host: str = '0.0.0.0', port: int = 8080):
 
     # iniciar servidor UI
     ui.run(host=host, port=port)
+
 
 def show_login():
     global root
@@ -461,6 +806,7 @@ def show_login():
                         ui.button("Entrar", on_click=lambda _: do_login()).classes("primary")
     # footer já criado no nível do módulo
 
+
 def show_kanban():
     global root
     try:
@@ -482,8 +828,12 @@ def show_kanban():
         print(f"[DEBUG] show_kanban: {len(cards_data)} cards loaded")
         with ui.row().classes("w-full items-start mb-2 justify-between"):
             with ui.column().classes("items-start"):
-                ui.label(f"🗂️ {sanitize_text(APP_NAME)} — {sanitize_text(logged_user.get('NomeUsuario', ''))}").classes("text-2xl font-bold")
+                ui.label(
+                    f"🗂️ {sanitize_text(APP_NAME)} — "
+                    f"{sanitize_text(logged_user.get('NomeUsuario', ''))}"
+                ).classes("text-2xl font-bold")
                 ui.label(f"{len(cards_data)} cards carregados").classes("text-sm text-gray-500")
+
             # botão de logout posicionado à direita do cabeçalho
             # botões de utilitários: Limpar cache e Atualizar cards
             def _do_clean_cache(_=None):
@@ -491,17 +841,20 @@ def show_kanban():
                 dlg = ui.dialog()
                 with dlg:
                     ui.markdown("## Confirmar limpeza do cache")
-                    ui.label("Deseja realmente remover arquivos de cache expirados? Esta ação não pode ser desfeita.").classes("text-sm text-gray-700")
+                    ui.label(
+                        "Deseja realmente remover arquivos de cache expirados? Esta ação não pode ser desfeita."
+                    ).classes("text-sm text-gray-700")
                     with ui.row().classes("w-full justify-end gap-2 mt-4"):
+
                         def _confirm(_=None):
                             try:
                                 removed = clean_cache()
                                 if removed:
-                                    ui.notify(f"Cache limpo: {removed} arquivo(s) removidos", color='positive')
+                                    ui.notify(f"Cache limpo: {removed} arquivo(s) removidos", color="positive")
                                 else:
-                                    ui.notify("Cache limpo: nenhum arquivo expirado encontrado", color='info')
+                                    ui.notify("Cache limpo: nenhum arquivo expirado encontrado", color="info")
                             except Exception as e:
-                                ui.notify(f"Erro ao limpar cache: {e}", color='negative')
+                                ui.notify(f"Erro ao limpar cache: {e}", color="negative")
                             finally:
                                 dlg.close()
 
@@ -523,8 +876,8 @@ def show_kanban():
                     total_added = 0
                     total_removed = 0
                     for col_name in new_column_cards.keys():
-                        old_ids = {c.get('NumAtendimento') for c in (column_cards.get(col_name) or [])}
-                        new_ids = {c.get('NumAtendimento') for c in (new_column_cards.get(col_name) or [])}
+                        old_ids = {c.get("NumAtendimento") for c in (column_cards.get(col_name) or [])}
+                        new_ids = {c.get("NumAtendimento") for c in (new_column_cards.get(col_name) or [])}
                         added = new_ids - old_ids
                         removed = old_ids - new_ids
                         if added or removed:
@@ -539,12 +892,15 @@ def show_kanban():
                         render_board(cols_to_update=changed_cols)
                     else:
                         # nada mudou, garantir que o UI esteja consistente
-                        ui.notify("Nenhuma alteração detectada nos cards.", color='info')
+                        ui.notify("Nenhuma alteração detectada nos cards.", color="info")
                         return
 
-                    ui.notify(f"Atualização concluída: {len(new_cards)} cards (+{total_added}/-{total_removed})", color='positive')
+                    ui.notify(
+                        f"Atualização concluída: {len(new_cards)} cards (+{total_added}/-{total_removed})",
+                        color="positive",
+                    )
                 except Exception as e:
-                    ui.notify(f"Erro ao atualizar cards: {e}", color='negative')
+                    ui.notify(f"Erro ao atualizar cards: {e}", color="negative")
 
             ui.button("Limpar cache", on_click=_do_clean_cache).classes("secondary")
             ui.button("Atualizar cards", on_click=_do_refresh).classes("secondary")
@@ -568,7 +924,7 @@ def show_kanban():
             if isinstance(value, datetime):
                 return value.strftime("%Y-%m-%d %H:%M:%S")
             try:
-                s = value.decode(errors='ignore') if isinstance(value, (bytes, bytearray)) else str(value)
+                s = value.decode(errors="ignore") if isinstance(value, (bytes, bytearray)) else str(value)
                 for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
                     try:
                         dt = datetime.strptime(s, fmt)
@@ -581,15 +937,21 @@ def show_kanban():
 
         def _days_open_for_card(card_item):
             try:
-                av = card_item.get('Abertura')
+                av = card_item.get("Abertura")
                 if av is None:
                     return -1
                 if isinstance(av, datetime):
                     dt = av
                 else:
-                    s = av.decode(errors='ignore') if isinstance(av, (bytes, bytearray)) else str(av)
+                    s = av.decode(errors="ignore") if isinstance(av, (bytes, bytearray)) else str(av)
                     dt = None
-                    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                    for fmt in (
+                        "%Y-%m-%d %H:%M:%S.%f",
+                        "%Y-%m-%d %H:%M:%S",
+                        "%Y-%m-%d",
+                        "%d/%m/%Y %H:%M:%S",
+                        "%d/%m/%Y",
+                    ):
                         try:
                             dt = datetime.strptime(s, fmt)
                             break
@@ -607,7 +969,9 @@ def show_kanban():
             with board:
                 for col_name, bg_color, _ in COLUMNS:
                     with ui.column().classes("basis-0 flex-1").style("min-width: 12rem;"):
-                        ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(f"background:{bg_color};")
+                        ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(
+                            f"background:{bg_color};"
+                        )
                         cards_container = ui.column().classes("p-2")
                         column_containers[col_name] = cards_container
 
@@ -634,7 +998,9 @@ def show_kanban():
                 texto_raw = card.get("TextoIteracao") or ""
 
                 with cards_container:
-                    with ui.card().classes("mb-3 shadow-sm").style(f"border-left:4px solid {COLUMN_MAP.get(col_name, {}).get('color', '#ffffff')};"):
+                    with ui.card().classes("mb-3 shadow-sm").style(
+                        f"border-left:4px solid {COLUMN_MAP.get(col_name, {}).get('color', '#ffffff')};"
+                    ):
                         # header: cliente + id
                         with ui.row().classes("items-center justify-between w-full"):
                             ui.label(cliente).classes("font-semibold text-lg")
@@ -648,8 +1014,18 @@ def show_kanban():
                             if isinstance(abertura_val, datetime):
                                 dt_abertura = abertura_val
                             else:
-                                s = abertura_val.decode(errors='ignore') if isinstance(abertura_val, (bytes, bytearray)) else str(abertura_val)
-                                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                                s = (
+                                    abertura_val.decode(errors="ignore")
+                                    if isinstance(abertura_val, (bytes, bytearray))
+                                    else str(abertura_val)
+                                )
+                                for fmt in (
+                                    "%Y-%m-%d %H:%M:%S.%f",
+                                    "%Y-%m-%d %H:%M:%S",
+                                    "%Y-%m-%d",
+                                    "%d/%m/%Y %H:%M:%S",
+                                    "%d/%m/%Y",
+                                ):
                                     try:
                                         dt_abertura = datetime.strptime(s, fmt)
                                         break
@@ -670,7 +1046,9 @@ def show_kanban():
                                 color_class = "text-blue-600" if int(days_open) <= 120 else "text-red-600"
                             except Exception:
                                 color_class = "text-red-600"
-                            lbl = ui.label(f"Aberto há {days_open} dias").classes(f"text-sm font-bold {color_class} ml-0")
+                            lbl = ui.label(f"Aberto há {days_open} dias").classes(
+                                f"text-sm font-bold {color_class} ml-0"
+                            )
                             try:
                                 if dt_abertura:
                                     ui.tooltip(lbl, f"Data de abertura: {dt_abertura.strftime('%d/%m/%Y')}")
@@ -684,8 +1062,18 @@ def show_kanban():
                             if isinstance(prox_val, datetime):
                                 dt_prox = prox_val
                             else:
-                                s = prox_val.decode(errors='ignore') if isinstance(prox_val, (bytes, bytearray)) else str(prox_val)
-                                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                                s = (
+                                    prox_val.decode(errors="ignore")
+                                    if isinstance(prox_val, (bytes, bytearray))
+                                    else str(prox_val)
+                                )
+                                for fmt in (
+                                    "%Y-%m-%d %H:%M:%S.%f",
+                                    "%Y-%m-%d %H:%M:%S",
+                                    "%Y-%m-%d",
+                                    "%d/%m/%Y %H:%M:%S",
+                                    "%d/%m/%Y",
+                                ):
                                     try:
                                         dt_prox = datetime.strptime(s, fmt)
                                         break
@@ -728,7 +1116,7 @@ def show_kanban():
 
                         with ui.row().classes("items-center gap-2"):
                             latest = fetch_latest_iteration(num)
-                            analyst = sanitize_text((latest.get('NomeUsuario') if latest else None) or '-')
+                            analyst = sanitize_text((latest.get("NomeUsuario") if latest else None) or "-")
                             ui.label(f"Analista: {analyst}").classes("text-sm text-gray-600")
                             ui.button("Histórico", on_click=lambda _, n=num: show_history_dialog(n)).classes("primary")
 
@@ -742,17 +1130,21 @@ def show_kanban():
                                         ui.label("Nenhuma RDM encontrada").classes("text-sm text-gray-500")
                                     else:
                                         with ui.row().classes("w-full justify-center"):
-                                            with ui.column().classes("w-full max-w-4xl").style("overflow:auto; max-height:60vh;padding-right:8px;"):
+                                            with ui.column().classes("w-full max-w-4xl").style(
+                                                "overflow:auto; max-height:60vh;padding-right:8px;"
+                                            ):
                                                 for r in rdms:
                                                     with ui.card().classes("mb-2 p-3 w-full"):
-                                                        numrdm = sanitize_text(r.get('IdRdm') or '')
-                                                        desdob_raw = r.get('Desdobramento')
-                                                        desdob = sanitize_text(desdob_raw) if desdob_raw is not None else ''
-                                                        tipordm = sanitize_text(r.get('NomeTipoRDM') or '')
-                                                        situ = sanitize_text(r.get('SituacaoRDM') or '')
-                                                        reg = r.get('RegInclusao')
+                                                        numrdm = sanitize_text(r.get("IdRdm") or "")
+                                                        desdob_raw = r.get("Desdobramento")
+                                                        desdob = (
+                                                            sanitize_text(desdob_raw) if desdob_raw is not None else ""
+                                                        )
+                                                        tipordm = sanitize_text(r.get("NomeTipoRDM") or "")
+                                                        situ = sanitize_text(r.get("SituacaoRDM") or "")
+                                                        reg = r.get("RegInclusao")
                                                         data_str = _format_datetime(reg)
-                                                        desc = sanitize_text(r.get('Descricao') or '')
+                                                        desc = sanitize_text(r.get("Descricao") or "")
                                                         md = (
                                                             f"**Nº:** {numrdm} / {desdob}\n\n"
                                                             f"**Tipo de RDM:** {tipordm}\n\n"
@@ -774,11 +1166,13 @@ def show_kanban():
                                 with dlg:
                                     if img_bytes and mime:
                                         b64 = base64.b64encode(img_bytes).decode()
-                                        ui.image(f"data:{mime};base64,{b64}").style("max-width:100%;max-height:60vh;object-fit:contain;")
+                                        ui.image(f"data:{mime};base64,{b64}").style(IMG_STYLE)
                                     else:
-                                        ui.label("[Imagem] — não foi possível extrair a imagem").classes("text-sm text-gray-600")
-                                    with ui.row().classes('w-full justify-end gap-2'):
-                                        ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('secondary')
+                                        ui.label("[Imagem] — não foi possível extrair a imagem").classes(
+                                            "text-sm text-gray-600"
+                                        )
+                                    with ui.row().classes("w-full justify-end gap-2"):
+                                        ui.button("Fechar", on_click=lambda _=None: dlg.close()).classes("secondary")
                                 dlg.open()
 
                             # detectar rapidamente se há imagem extraível para habilitar o botão
@@ -790,7 +1184,9 @@ def show_kanban():
                                 if cached is None:
                                     try_img, try_mime = extract_first_image_from_rtf(texto_raw)
                                     img_available = bool(try_img and try_mime)
-                                    print(f"[DEBUG] card #{num} extract tried -> has_image={img_available} mime={try_mime}")
+                                    # split debug into two prints to avoid long line length
+                                    print(f"[DEBUG] card #{num} extract tried -> has_image={img_available}")
+                                    print(f"[DEBUG] card #{num} mime={try_mime}")
                                     # gravar no cache booleano
                                     set_image_flag_for_content(texto_raw, img_available)
                                 else:
@@ -800,11 +1196,12 @@ def show_kanban():
                                 img_available = False
                                 print(f"[DEBUG] card #{num} image detection error: {e}")
 
-                            btn_img = ui.button('Imagem', on_click=_open_image_dialog_local).classes('secondary')
+                            btn_img = ui.button("Imagem", on_click=_open_image_dialog_local).classes("secondary")
                             if not img_available:
                                 # se o cache explicitamente dizer que não há imagem, oferecemos opção de re-testar
                                 try:
                                     if cached is False:
+
                                         def _open_image_dialog_local_retest(_, rtf=texto_raw):
                                             # forçar reextração ignorando o cache; atualizar flag
                                             try:
@@ -820,24 +1217,36 @@ def show_kanban():
                                             with dlg:
                                                 if img_b and mime:
                                                     b64 = base64.b64encode(img_b).decode()
-                                                    ui.image(f"data:{mime};base64,{b64}").style("max-width:100%;max-height:60vh;object-fit:contain;")
+                                                    ui.image(f"data:{mime};base64,{b64}").style(IMG_STYLE)
                                                 else:
-                                                    ui.label("[Imagem] — não foi possível extrair a imagem").classes("text-sm text-gray-600")
-                                                with ui.row().classes('w-full justify-end gap-2'):
-                                                    ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('secondary')
+                                                    ui.label("[Imagem] — não foi possível extrair a imagem").classes(
+                                                        "text-sm text-gray-600"
+                                                    )
+                                                with ui.row().classes("w-full justify-end gap-2"):
+                                                    ui.button("Fechar", on_click=lambda _=None: dlg.close()).classes(
+                                                        "secondary"
+                                                    )
                                             dlg.open()
 
-                                        ui.button('Re-testar imagem', on_click=_open_image_dialog_local_retest).classes('secondary')
-                                        ui.tooltip(btn_img, 'Cache indica ausência de imagem — clique em Re-testar imagem para forçar reextração')
+                                        ui.button("Re-testar imagem", on_click=_open_image_dialog_local_retest).classes(
+                                            "secondary"
+                                        )
+                                        ui.tooltip(
+                                            btn_img,
+                                            (
+                                                "Cache indica ausência de imagem — clique em "
+                                                "Re-testar imagem para forçar reextração"
+                                            ),
+                                        )
                                         # marcar o botão principal como desabilitado visualmente
                                         try:
-                                            btn_img.props('disabled', True)
+                                            btn_img.props("disabled", True)
                                         except Exception:
                                             pass
                                     else:
                                         # sem cache explícito e sem imagem encontrada: desabilitar botão
-                                        btn_img.props('disabled', True)
-                                        ui.tooltip(btn_img, 'Nenhuma imagem detectada neste texto')
+                                        btn_img.props("disabled", True)
+                                        ui.tooltip(btn_img, "Nenhuma imagem detectada neste texto")
                                 except Exception:
                                     # fallback: apenas esconder o botão se props falhar
                                     try:
@@ -875,11 +1284,12 @@ def show_kanban():
 
     def show_history_dialog(num_atendimento):
         hist = fetch_history(num_atendimento)
+
         # ordenar por DataIteracao asc e HoraIteracao asc quando possível
         def _make_dt(h):
             try:
-                d = h.get('DataIteracao')
-                t = h.get('HoraIteracao')
+                d = h.get("DataIteracao")
+                t = h.get("HoraIteracao")
                 # se já for datetime
                 if isinstance(d, datetime):
                     date_part = d
@@ -921,19 +1331,21 @@ def show_kanban():
                 with ui.column().classes("w-full max-w-4xl"):
                     # título removido pelo usuário: não exibir label de cabeçalho
                     for h in hist_sorted:
-                        usuario = sanitize_text(h.get('NomeUsuario') or '-')
-                        texto = sanitize_text(limpar_rtf(h.get('TextoIteracao') or ""))
+                        usuario = sanitize_text(h.get("NomeUsuario") or "-")
+                        texto = sanitize_text(limpar_rtf(h.get("TextoIteracao") or ""))
 
                         def _format_dt(d, t):
                             # tenta montar um datetime a partir de DataIteracao (data) e HoraIteracao (hora)
-                            # lida com casos em que HoraIteracao vem como '1900-01-01 12:50:52' e DataIteracao como '2025-10-17 00:00:00'
+                            # lida com casos em que HoraIteracao vem como
+                            # '1900-01-01 12:50:52' e DataIteracao como
+                            # '2025-10-17 00:00:00'
                             try:
                                 # parse da parte de data
                                 date_part = None
                                 if isinstance(d, datetime):
                                     date_part = d
                                 else:
-                                    s = str(d) if d is not None else ''
+                                    s = str(d) if d is not None else ""
                                     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
                                         try:
                                             date_part = datetime.strptime(s, fmt)
@@ -943,7 +1355,8 @@ def show_kanban():
                                 if date_part is None:
                                     date_part = datetime.min
 
-                                # parse da parte de hora — aceitar tanto 'HH:MM:SS' quanto um datetime completo com data (ex.: 1900-01-01 12:50:52)
+                                # parse da parte de hora — aceitar tanto 'HH:MM:SS' quanto
+                                # um datetime completo com data (ex.: 1900-01-01 12:50:52)
                                 time_part = None
                                 if isinstance(t, datetime):
                                     time_part = t.time()
@@ -958,7 +1371,8 @@ def show_kanban():
                                         except Exception:
                                             continue
 
-                                # construir datetime final: usar a data de date_part e a hora de time_part quando disponível
+                                # construir datetime final: usar a data de date_part
+                                # e a hora de time_part quando disponível
                                 if time_part:
                                     combined = datetime.combine(date_part.date(), time_part)
                                 else:
@@ -969,7 +1383,7 @@ def show_kanban():
                             except Exception:
                                 return f"{sanitize_text(d)} {sanitize_text(t)}"
 
-                        data_str = _format_dt(h.get('DataIteracao'), h.get('HoraIteracao'))
+                        data_str = _format_dt(h.get("DataIteracao"), h.get("HoraIteracao"))
 
                         # cartão por iteração com labels em negrito
                         with ui.card().classes("mb-2 p-3 w-full"):
@@ -978,7 +1392,7 @@ def show_kanban():
                             ui.markdown(texto)
 
                             # botão Imagem (apenas se houver imagem extraível no TextoIteracao)
-                            rtf_content = h.get('TextoIteracao') or ''
+                            rtf_content = h.get("TextoIteracao") or ""
                             img_exists = False
                             try:
                                 cached = get_image_flag_for_content(rtf_content)
@@ -997,49 +1411,166 @@ def show_kanban():
                                 print(f"[DEBUG] history image detection error: {e}")
 
                             if img_exists:
+
                                 def _open_history_image(_=None, rtf=rtf_content):
                                     try:
-                                        img_b, mime = extract_first_image_from_rtf(rtf)
+                                        key = _image_cache_key(rtf)
+                                        cached_now = get_image_flag_for_content(rtf)
+                                        print(f"[DEBUG] history click image key={key} cached={cached_now}")
                                     except Exception:
+                                        pass
+                                    try:
+                                        img_b, mime = extract_first_image_from_rtf(rtf)
+                                        print(
+                                            "[DEBUG] history click extract -> has_image="
+                                            f"{bool(img_b and mime)} mime={mime} bytes_len={len(img_b) if img_b else 0}"
+                                        )
+                                    except Exception as e:
+                                        print(f"[DEBUG] history click extract error: {e}")
                                         img_b, mime = None, None
                                     dlg = ui.dialog()
+                                    dlg.classes("w-full max-w-6xl")
                                     with dlg:
                                         if img_b and mime:
-                                            b64 = base64.b64encode(img_b).decode()
-                                            ui.image(f"data:{mime};base64,{b64}").style("max-width:100%;max-height:60vh;object-fit:contain;")
+                                            key = _image_cache_key(rtf)
+                                            # debug: log expected on-disk path before trying to save
+                                            try:
+                                                ext = _ext_for_mime(mime)
+                                                expected_path = _temp_image_path_for_key(key, ext)
+                                                msg = (
+                                                    f"[DEBUG] history will write temp image path={expected_path} "
+                                                    f"exists_before={expected_path.exists()} ext={ext}"
+                                                )
+                                                print(msg)
+                                                try:
+                                                    _append_image_debug(msg)
+                                                except Exception:
+                                                    pass
+                                            except Exception:
+                                                pass
+                                            url = save_temp_image_and_get_url(key, img_b, mime)
+                                            if url:
+                                                # debug: log that we are inserting an <img> with this URL
+                                                try:
+                                                    present = temp_image_exists_on_disk(key)
+                                                    import os
+
+                                                    msg = (
+                                                        "[DEBUG] creating ui.image: pid="
+                                                        f"{os.getpid()} for key={key} url={url} "
+                                                        f"present_on_disk={present}"
+                                                    )
+                                                    print(msg)
+                                                except Exception:
+                                                    pass
+                                                # Use relative URL to avoid cross-host issues
+                                                # so the browser requests the same host/port
+                                                rel_url = url  # already starts with '/_temp_img/'
+                                                img_html = f'<img src="{rel_url}" style="{IMG_STYLE}">'
+                                                ui.html(img_html, sanitize=False)
+                                                link_html = (
+                                                    f'<div style="margin-top:8px;">'
+                                                    f'<a href="{rel_url}" target="_blank" rel="noopener">'
+                                                    'Abrir imagem em nova aba</a></div>'
+                                                )
+                                                ui.html(link_html, sanitize=False)
+                                            else:
+                                                # fallback para data-uri caso gravação falhe
+                                                b64 = base64.b64encode(img_b).decode()
+                                                data_img_html = (
+                                                    f'<img src="data:{mime};base64,{b64}" '
+                                                    f'style="{IMG_STYLE}">'
+                                                )
+                                                ui.html(data_img_html, sanitize=False)
                                         else:
-                                            ui.label("[Imagem] — não foi possível extrair a imagem").classes("text-sm text-gray-600")
-                                        with ui.row().classes('w-full justify-end gap-2'):
-                                            ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('secondary')
+                                            ui.label("[Imagem] — não foi possível extrair a imagem").classes(
+                                                "text-sm text-gray-600"
+                                            )
+                                        with ui.row().classes("w-full justify-end gap-2"):
+                                            ui.button("Fechar", on_click=lambda _=None: dlg.close()).classes(
+                                                "secondary"
+                                            )
                                     dlg.open()
 
-                                ui.button('Imagem', on_click=_open_history_image).classes('secondary')
+                                ui.button("Imagem", on_click=_open_history_image).classes("secondary")
                             else:
                                 # se o cache indicou ausência, permitir re-teste manual
                                 try:
                                     if cached is False:
+
                                         def _open_history_image_retest(_=None, rtf=rtf_content):
                                             try:
-                                                img_b, mime = extract_first_image_from_rtf(rtf)
+                                                key = _image_cache_key(rtf)
+                                                print(f"[DEBUG] history re-test image key={key}")
                                             except Exception:
+                                                pass
+
+                                            try:
+                                                img_b, mime = extract_first_image_from_rtf(rtf)
+                                                # split debug output into two prints to avoid long source lines
+                                                print("[DEBUG] history re-test -> has_image=", bool(img_b and mime))
+                                                print(f"mime={mime} bytes_len={len(img_b) if img_b else 0}")
+                                            except Exception as e:
+                                                print(f"[DEBUG] history re-test extract error: {e}")
                                                 img_b, mime = None, None
                                             try:
                                                 set_image_flag_for_content(rtf, bool(img_b and mime))
                                             except Exception:
                                                 pass
                                             dlg = ui.dialog()
+                                            dlg.classes("w-full max-w-6xl")
                                             with dlg:
                                                 if img_b and mime:
-                                                    b64 = base64.b64encode(img_b).decode()
-                                                    ui.image(f"data:{mime};base64,{b64}").style("max-width:100%;max-height:60vh;object-fit:contain;")
-                                                else:
-                                                    ui.label("[Imagem] — não foi possível extrair a imagem").classes("text-sm text-gray-600")
-                                                with ui.row().classes('w-full justify-end gap-2'):
-                                                    ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('secondary')
+                                                    key = _image_cache_key(rtf)
+                                                    # debug: log expected on-disk path before trying to save (retest)
+                                                    try:
+                                                        ext = _ext_for_mime(mime)
+                                                        expected_path = _temp_image_path_for_key(key, ext)
+                                                        msg = (
+                                                            f"[DEBUG] history re-test will write temp image path={expected_path} "
+                                                            f"exists_before={expected_path.exists()} ext={ext}"
+                                                        )
+                                                        print(msg)
+                                                        try:
+                                                            _append_image_debug(msg)
+                                                        except Exception:
+                                                            pass
+                                                    except Exception:
+                                                        pass
+                                                    url = save_temp_image_and_get_url(key, img_b, mime)
+                                                    if url:
+                                                        try:
+                                                            present = temp_image_exists_on_disk(key)
+                                                            import os
+
+                                                            pre = "[DEBUG] creating ui.image (retest): pid="
+                                                            mid = f"{os.getpid()} for key={key} url={url} "
+                                                            post = f"present_on_disk={present}"
+                                                            print(pre + mid + post)
+                                                        except Exception:
+                                                            pass
+                                                        # Use relative URL to avoid cross-host issues
+                                                        rel_url = url
+                                                        img_html = f'<img src="{rel_url}" style="{IMG_STYLE}">'
+                                                        ui.html(img_html, sanitize=False)
+                                                        link_html = (
+                                                            '<div style="margin-top:8px;">'
+                                                            f'<a href="{rel_url}" target="_blank" rel="noopener">'
+                                                            'Abrir imagem em nova aba</a></div>'
+                                                        )
+                                                        ui.html(link_html, sanitize=False)
                                             dlg.open()
 
-                                        ui.button('Re-testar imagem', on_click=_open_history_image_retest).classes('secondary')
-                                        ui.tooltip(None, 'Cache indica ausência de imagem — clique em Re-testar imagem para forçar reextração')
+                                        ui.button("Re-testar imagem", on_click=_open_history_image_retest).classes(
+                                            "secondary"
+                                        )
+                                        ui.tooltip(
+                                            None,
+                                            (
+                                                "Cache indica ausência de imagem — clique em "
+                                                "Re-testar imagem para forçar reextração"
+                                            ),
+                                        )
                                 except Exception:
                                     pass
                     # botão fechar centralizado
@@ -1048,6 +1579,7 @@ def show_kanban():
         dlg.open()
 
     render_board()
+
 
 # ---------- Execução ----------
 # A inicialização da UI (show_login/show_kanban + ui.run) fica
@@ -1060,10 +1592,10 @@ if __name__ in {"__main__", "__mp_main__"}:
 
     # Em modo normal, inicializamos a UI via start_app().
     # Se AUTO_KANBAN=1 queremos pular o login e abrir direto o Kanban (útil para debug).
-    auto = os.getenv('AUTO_KANBAN') == '1'
+    auto = os.getenv("AUTO_KANBAN") == "1"
     if auto:
         logged_user.update({"CodUsuario": 0, "NomeUsuario": "dev"})
 
     # start_app fará start_periodic_cache_clean internamente
     # porta e host permanecem como antes
-    start_app(host=os.getenv('APP_HOST', '0.0.0.0'), port=int(os.getenv('APP_PORT', '8888')))
+    start_app(host=os.getenv("APP_HOST", "0.0.0.0"), port=int(os.getenv("APP_PORT", "8888")))

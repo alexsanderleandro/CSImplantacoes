@@ -45,14 +45,15 @@ def main():
                 for j, v in enumerate(row):
                     if isinstance(v, (bytes, bytearray)):
                         try:
-                            row[j] = v.decode(errors='ignore')
+                            row[j] = v.decode(errors="ignore")
                         except Exception:
                             row[j] = str(v)
-                print(i+1, dict(zip(cols, row)))
+                print(i + 1, dict(zip(cols, row)))
         cur.close()
         conn.close()
     except Exception as e:
         print("Erro ao executar query:", e)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

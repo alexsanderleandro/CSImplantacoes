@@ -36,12 +36,12 @@ def sanitize_text(value: object) -> str:
         return ""
     if isinstance(value, (bytes, bytearray)):
         try:
-            s = value.decode('utf-8')
+            s = value.decode("utf-8")
         except Exception:
-            s = value.decode('utf-8', errors='replace')
+            s = value.decode("utf-8", errors="replace")
     else:
         s = str(value)
-    cleaned = ''.join(ch for ch in s if not (0xD800 <= ord(ch) <= 0xDFFF))
+    cleaned = "".join(ch for ch in s if not (0xD800 <= ord(ch) <= 0xDFFF))
     return cleaned
 
 
@@ -54,14 +54,14 @@ def main(limit=10):
     print(f"Fetched {len(rows)} rows (showing up to {limit})")
     for r in rows:
         row = dict(zip(cols, r))
-        num = row.get('NumAtendimento')
-        cliente = sanitize_text(row.get('NomeCliente'))
-        assunto = sanitize_text(row.get('AssuntoAtendimento'))
-        texto_raw = row.get('TextoIteracao') or ''
+        num = row.get("NumAtendimento")
+        cliente = sanitize_text(row.get("NomeCliente"))
+        assunto = sanitize_text(row.get("AssuntoAtendimento"))
+        texto_raw = row.get("TextoIteracao") or ""
         texto = limpar_rtf(texto_raw)
-        snippet = (texto[:300] + '...') if len(texto) > 300 else texto
+        snippet = (texto[:300] + "...") if len(texto) > 300 else texto
         snippet = sanitize_text(snippet)
-        print('-' * 80)
+        print("-" * 80)
         print(f"Num: {num} | Cliente: {cliente} | Assunto: {assunto}")
         print("Snippet:")
         print(snippet)
@@ -70,5 +70,5 @@ def main(limit=10):
     conn.close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main(10)

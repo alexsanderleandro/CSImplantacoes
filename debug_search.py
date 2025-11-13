@@ -16,22 +16,22 @@ def main():
     cur = conn.cursor()
     try:
         cur.execute(Q)
-        cols = [c[0] for c in cur.description]
         rows = cur.fetchall()
-        print('Found', len(rows))
+        print("Found", len(rows))
         for r in rows[:20]:
             num, assunto, assunto_bin = r
             # print binary as hex
             try:
-                hexbin = assunto_bin.hex() if hasattr(assunto_bin, 'hex') else str(assunto_bin)
+                hexbin = assunto_bin.hex() if hasattr(assunto_bin, "hex") else str(assunto_bin)
             except Exception:
                 hexbin = str(assunto_bin)
-            print({'NumAtendimento': num, 'Assunto': assunto, 'AssuntoBin': hexbin[:120]})
+            print({"NumAtendimento": num, "Assunto": assunto, "AssuntoBin": hexbin[:120]})
     except Exception as e:
-        print('Error:', e)
+        print("Error:", e)
     finally:
         cur.close()
         conn.close()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

@@ -10,13 +10,15 @@ Imprime:
 - resultado de extract_first_image_from_rtf (has_image, mime, bytes_len)
 
 """
-import sys
 import hashlib
 import os
+import sys
+
 from authentication import get_db_connection
 from rtf_utils import extract_first_image_from_rtf
 
-CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cache_images')
+CACHE_DIR = os.path.join(os.path.dirname(__file__), "cache_images")
+
 
 def image_cache_key(content):
     if content is None:
@@ -25,7 +27,7 @@ def image_cache_key(content):
         if isinstance(content, (bytes, bytearray)):
             b = bytes(content)
         else:
-            b = str(content).encode('utf-8', errors='ignore')
+            b = str(content).encode("utf-8", errors="ignore")
         return hashlib.sha256(b).hexdigest()
     except Exception:
         return None
@@ -38,10 +40,12 @@ def flag_path_for_key(key):
 def fetch_latest_text_for_atendimento(num):
     conn = get_db_connection()
     cur = conn.cursor()
-    sql = ("SELECT TOP 1 CONVERT(NVARCHAR(MAX), TextoIteracao) "
-           "FROM AtendimentoIteracao WITH (NOLOCK) "
-           "WHERE NumAtendimento = ? AND Desdobramento = 0 "
-           "ORDER BY NumIteracao DESC")
+    sql = (
+        "SELECT TOP 1 CONVERT(NVARCHAR(MAX), TextoIteracao) "
+        "FROM AtendimentoIteracao WITH (NOLOCK) "
+        "WHERE NumAtendimento = ? AND Desdobramento = 0 "
+        "ORDER BY NumIteracao DESC"
+    )
     cur.execute(sql, (num,))
     row = cur.fetchone()
     cur.close()
@@ -68,7 +72,7 @@ def main():
     print("Flag path:", flag)
     if flag and os.path.exists(flag):
         try:
-            with open(flag, 'r', encoding='utf-8') as f:
+            with open(flag, "r", encoding="utf-8") as f:
                 val = f.read(1)
             print("Flag file exists, value:", val)
         except Exception as e:
@@ -85,5 +89,6 @@ def main():
     except Exception as e:
         print("Extractor raised:", e)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

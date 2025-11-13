@@ -8,7 +8,7 @@ rtf_text = r"""
 {\stylesheet {\ql\fs22 Normal;}}
 {\info{\creatim\yr2025\mo10\dy3\hr17\min12}{\version1}}
 \nouicompat\splytwnine\htmautsp\sectd\pard\plain\ql
-{\lang1046\langfe1046\f1\fs20\cf0 
+{\lang1046\langfe1046\f1\fs20\cf0
 Libera\u231\'e7\u227\'e3o foi feita e est\u225\'e1 funcionando corretamente
 }
 \f1\fs20\par
@@ -21,6 +21,7 @@ Interação recente: green0;splytwninesectdplainlangfe1046fs20
 Libera'e7'e3o foi feita e est'e1 funcionando corretamente
 """
 
+
 def testar_limpeza(texto, descricao):
     print(f"\nTestando: {descricao}")
     print("-" * 50)
@@ -29,6 +30,7 @@ def testar_limpeza(texto, descricao):
     print("\nDepois:")
     print(limpar_rtf(texto))
     print("-" * 50)
+
 
 # Testa o texto RTF
 testar_limpeza(rtf_text, "Texto RTF")

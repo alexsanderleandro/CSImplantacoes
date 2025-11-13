@@ -1,14 +1,16 @@
 import re
 
+
 def extrair_texto_rtf(rtf_text):
     # Remove comandos RTF e mantém apenas o texto
     # Remove comandos RTF como \comando
-    text = re.sub(r'\\[a-zA-Z0-9]+\s*', ' ', rtf_text)
+    text = re.sub(r"\\[a-zA-Z0-9]+\s*", " ", rtf_text)
     # Remove blocos entre chaves {}
-    text = re.sub(r'\{[^}]*\}', ' ', text)
+    text = re.sub(r"\{[^}]*\}", " ", text)
     # Remove múltiplos espaços
-    text = re.sub(r'\s+', ' ', text).strip()
+    text = re.sub(r"\s+", " ", text).strip()
     return text
+
 
 # Texto RTF para teste
 rtf_text = r"""
@@ -18,7 +20,7 @@ rtf_text = r"""
 {\stylesheet {\ql\fs22 Normal;}}
 {\info{\creatim\yr2025\mo10\dy3\hr17\min12}{\version1}}
 \nouicompat\splytwnine\htmautsp\sectd\pard\plain\ql
-{\lang1046\langfe1046\f1\fs20\cf0 
+{\lang1046\langfe1046\f1\fs20\cf0
 Libera\u231\'e7\u227\'e3o foi feita e est\u225\'e1 funcionando corretamente
 }
 \f1\fs20\par

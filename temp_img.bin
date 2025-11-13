@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>NiceGUI</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link href="/_nicegui/3.2.0/static/favicon.ico" rel="shortcut icon" />
+    <style>
+      @layer theme, base, quasar, nicegui, components, utilities, overrides, quasar_importants;
+      @import url("/_nicegui/3.2.0/static/fonts.css") layer(base);
+      
+        @import url("/_nicegui/3.2.0/static/quasar.unimportant.prod.css") layer(quasar);
+        @import url("/_nicegui/3.2.0/static/quasar.important.prod.css") layer(quasar_importants);
+      
+      @import url("/_nicegui/3.2.0/static/nicegui.css") layer(nicegui);
+      @layer quasar {
+        blockquote, dd, dl, figure, h1, h2, h3, h4, h5, h6, hr, p, pre {
+          margin: revert-layer; /* HACK: revert Quasar's margin styles */
+        }
+      }
+      @layer overrides {
+        .column.inline, .flex.inline, .row.inline {
+          display: inline-flex;  /* HACK: re-apply Quasar's inline styles to override Tailwind */
+        }
+        .nicegui-dialog-open,
+        .nicegui-select-popup-open {
+          scroll-behavior: auto !important; /* HACK: avoid smooth-scrolling when dialogs or select popups close */
+        }
+      }
+    </style>
+    <!-- prevent Prettier from removing this line -->
+    
+    <script type="importmap">
+      {"imports": {"nicegui-aggrid":"/_nicegui/3.2.0/esm/98eec27c4ffe6a4193d9a951d538523d/index.js","nicegui-aggrid/":"/_nicegui/3.2.0/esm/98eec27c4ffe6a4193d9a951d538523d/","nicegui-codemirror":"/_nicegui/3.2.0/esm/3084a979d3a35fb44af02767e08f2a81/index.js","nicegui-codemirror/":"/_nicegui/3.2.0/esm/3084a979d3a35fb44af02767e08f2a81/","nicegui-echart":"/_nicegui/3.2.0/esm/ce86a21d28a19b16ab8df6e5023b93f1/index.js","nicegui-echart/":"/_nicegui/3.2.0/esm/ce86a21d28a19b16ab8df6e5023b93f1/","nicegui-joystick":"/_nicegui/3.2.0/esm/dc3ea02879794aba343a99f101963c20/index.js","nicegui-joystick/":"/_nicegui/3.2.0/esm/dc3ea02879794aba343a99f101963c20/","nicegui-json-editor":"/_nicegui/3.2.0/esm/b5b8cfd60662f4f96fa0d3103e032769/index.js","nicegui-json-editor/":"/_nicegui/3.2.0/esm/b5b8cfd60662f4f96fa0d3103e032769/","nicegui-leaflet":"/_nicegui/3.2.0/esm/7c90fa3a7a236e782453c73c07a043cf/index.js","nicegui-leaflet/":"/_nicegui/3.2.0/esm/7c90fa3a7a236e782453c73c07a043cf/","nicegui-mermaid":"/_nicegui/3.2.0/esm/0819fd45c00d886010e30040fc25e1bf/index.js","nicegui-mermaid/":"/_nicegui/3.2.0/esm/0819fd45c00d886010e30040fc25e1bf/","nicegui-plotly":"/_nicegui/3.2.0/esm/407e3ca9a7eb795891d02f779feff205/index.js","nicegui-plotly/":"/_nicegui/3.2.0/esm/407e3ca9a7eb795891d02f779feff205/","nicegui-scene":"/_nicegui/3.2.0/esm/9d011aff97302ee0d23241c1358a2887/index.js","nicegui-scene/":"/_nicegui/3.2.0/esm/9d011aff97302ee0d23241c1358a2887/","nicegui-xterm":"/_nicegui/3.2.0/esm/97f1bdedb3bd571ee0041861bb06afba/index.js","nicegui-xterm/":"/_nicegui/3.2.0/esm/97f1bdedb3bd571ee0041861bb06afba/"}}
+    </script>
+    
+    <link rel="modulepreload" href="/_nicegui/3.2.0/components/8e06c0ea1eca6e981f805a927b2ccd54/markdown.js" />
+    
+    <link rel="modulepreload" href="/_nicegui/3.2.0/components/9f4426cad7008c9098d85a8e96501ced/input.js" />
+    
+    <!-- prevent Prettier from removing this line -->
+    
+    <style type="text/tailwindcss">
+      @custom-variant dark (&:where(body.body--dark, body.body--dark *));
+    </style>
+    
+  </head>
+  <body>
+    <script async src="/_nicegui/3.2.0/static/es-module-shims.js"></script>
+    <script defer src="/_nicegui/3.2.0/static/socket.io.min.js"></script>
+    
+    <script defer src="/_nicegui/3.2.0/static/tailwindcss.min.js"></script>
+    
+    <!-- prevent Prettier from removing this line -->
+    
+    <script defer src="/_nicegui/3.2.0/static/vue.global.prod.js"></script>
+    <script defer src="/_nicegui/3.2.0/static/quasar.umd.prod.js"></script>
+    
+    <script defer src="/_nicegui/3.2.0/static/nicegui.js"></script>
+
+    <script defer src="/_nicegui/3.2.0/static/lang/en-US.umd.prod.js"></script>
+    <style>
+*[data-joystick] > div {width: 100%; height: 100%; position: relative; }
+.js-plotly-plot .plotly .modebar-group {display: flex; }
+.js-plotly-plot .plotly .modebar-btn {display: flex; }
+.js-plotly-plot .plotly .modebar-btn svg {position: static; }
+.js-plotly-plot {box-sizing: content-box; }
+</style>
+
+<script type="text/x-template" id="tpl-joystick"><div data-joystick><div></div></div></script>
+<script type="text/x-template" id="tpl-plotly"><div data-plotly></div></script>
+
+    <div id="app"></div>
+    <div id="popup" aria-hidden="true">
+      <span>Connection lost.</span>
+      <span>Trying to reconnect...</span>
+    </div>
+    <script type="module">
+      const app = createApp(parseElements(String.raw`{"0":{"tag":"q-layout","class":["nicegui-layout"],"props":{"view":"hhh lpr fFf"},"children":[1,5],"events":[{"listener_id":"26574c61-326c-4998-a0af-d1183ab8aa48","type":"sub_pages_open","specials":[],"modifiers":[],"keys":[],"args":null,"throttle":0.0,"leading_events":true,"trailing_events":true,"js_handler":null},{"listener_id":"9dba44a9-2abc-48b8-9818-8db902c3294b","type":"sub_pages_navigate","specials":[],"modifiers":[],"keys":[],"args":null,"throttle":0.0,"leading_events":true,"trailing_events":true,"js_handler":null}]},"1":{"tag":"q-page-container","children":[2]},"2":{"tag":"q-page","children":[3]},"3":{"tag":"div","class":["nicegui-content"],"children":[4]},"4":{"tag":"div","class":["w-full","p-4"],"children":[6]},"5":{"tag":"q-footer","class":["nicegui-footer","wrap"],"props":{"model-value":true,"loopback":true,"bordered":false,"elevated":false},"slots":{"info":{"ids":[],"template":"&lt;span&gt;CSImplantações — v25.11.07 rev 01&lt;/span&gt;"}},"events":[{"listener_id":"2b14cd73-9fcf-423b-8354-0aba3d6ea653","type":"update:modelValue","specials":[],"modifiers":[],"keys":[],"args":[null],"throttle":0,"leading_events":true,"trailing_events":true,"js_handler":null}]},"6":{"tag":"div","class":["nicegui-row","row","w-full","h-screen","items-center","justify-center"],"children":[7]},"7":{"tag":"div","class":["nicegui-column","items-center","w-full","max-w-sm","gap-2"],"children":[8]},"8":{"tag":"q-card","class":["nicegui-card","w-full","p-6","rounded","shadow-md"],"style":{"background":"#ffffff"},"children":[9,10,11,12,13]},"9":{"tag":"nicegui-markdown","class":["nicegui-markdown","text-center"],"props":{"innerHTML":"&lt;h2&gt;CSImplantações — Login&lt;/h2&gt;\n","dynamic_resource_path":"/_nicegui/3.2.0/dynamic_resources"},"component":{"key":"8e06c0ea1eca6e981f805a927b2ccd54/markdown.js","name":"markdown","tag":"nicegui-markdown"}},"10":{"tag":"nicegui-input","class":["w-full"],"props":{"value":"","loopback":false,"error":null,"label":"Usuário","type":"text","_autocomplete":[],"autofocus":true},"events":[{"listener_id":"a8a913d3-d1d1-422f-91f3-ba899813e8cb","type":"update:value","specials":[],"modifiers":[],"keys":[],"args":[null],"throttle":0,"leading_events":true,"trailing_events":true,"js_handler":null}],"component":{"key":"9f4426cad7008c9098d85a8e96501ced/input.js","name":"input","tag":"nicegui-input"}},"11":{"tag":"nicegui-input","class":["w-full"],"props":{"value":"","loopback":false,"error":null,"label":"Senha","type":"password","_autocomplete":[]},"events":[{"listener_id":"6078928d-dea4-4dad-8a26-b4f17d91a07b","type":"update:value","specials":[],"modifiers":[],"keys":[],"args":[null],"throttle":0,"leading_events":true,"trailing_events":true,"js_handler":null}],"component":{"key":"9f4426cad7008c9098d85a8e96501ced/input.js","name":"input","tag":"nicegui-input"}},"12":{"tag":"div","text":"","class":["text-sm","text-red-600"]},"13":{"tag":"div","class":["nicegui-row","row","w-full","justify-center","mt-2"],"children":[14]},"14":{"tag":"q-btn","class":["primary"],"props":{"color":"primary","label":"Entrar"},"events":[{"listener_id":"0f96675a-0f21-44a2-9610-72ec1127d5f9","type":"click","specials":[],"modifiers":[],"keys":[],"args":[],"throttle":0.0,"leading_events":true,"trailing_events":true,"js_handler":null}]}}`), {
+        version: "3.2.0",
+        prefix: "",
+        query: {'client_id': '4e97f7b4-0eb6-4785-9c42-2b8e7d194a25', 'next_message_id': 0},
+        extraHeaders: {},
+        transports: ['websocket', 'polling'],
+      });
+      const dark = False;
+      const language = "en-US";
+      const vue_config = {"brand":{"primary":"#5898d4"},"loadingBar":{"color":"primary","skipHijack":false}};
+      
+        app.use(Quasar, {config: vue_config});
+        Quasar.lang.set(Quasar.lang[language.replace('-', '')]);
+        Quasar.Dark.set(dark === None ? "auto" : dark);
+    
+
+      import { default as markdown } from "/_nicegui/3.2.0/components/8e06c0ea1eca6e981f805a927b2ccd54/markdown.js";
+app.component("nicegui-markdown", markdown);
+import { default as input } from "/_nicegui/3.2.0/components/9f4426cad7008c9098d85a8e96501ced/input.js";
+app.component("nicegui-input", input);
+      var joystick = app.component('nicegui-joystick', {template:"#tpl-joystick",
+  async mounted() {
+    const { nipplejs } = await import("nicegui-joystick");
+    const joystick = nipplejs.create({
+      zone: this.$el.children[0],
+      position: { left: "50%", top: "50%" },
+      dynamicPage: true,
+      ...this.options,
+    });
+    joystick.on("start", (e) => this.$emit("start", e));
+    joystick.on("move", (_, data) => this.$emit("move", { data }));
+    joystick.on("end", (e) => this.$emit("end", e));
+  },
+  props: {
+    options: Object,
+  },
+});
+var plotly = app.component('nicegui-plotly', {template:"#tpl-plotly",
+  async mounted() {
+    const { Plotly } = await import("nicegui-plotly");
+    this.Plotly = Plotly;
+    this.update();
+  },
+  methods: {
+    update() {
+      // wait for plotly to be loaded
+      if (typeof this.Plotly === "undefined") {
+        setTimeout(this.update, 10);
+        return;
+      }
+
+      // default responsive to true
+      const options = this.options;
+      if (options.config === undefined) options.config = { responsive: true };
+      if (options.config.responsive === undefined) options.config.responsive = true;
+
+      // re-use plotly instance if config is the same
+      if (JSON.stringify(options.config) == JSON.stringify(this.last_options.config)) {
+        this.Plotly.react(this.$el, this.options, options.config);
+      } else {
+        this.Plotly.newPlot(this.$el, this.options, options.config);
+        this.set_handlers();
+      }
+
+      // store last options
+      this.last_options = options;
+    },
+    set_handlers() {
+      // forward events
+      for (const name of [
+        // source: https://plotly.com/javascript/plotlyjs-events/
+        "plotly_click",
+        "plotly_legendclick",
+        "plotly_selecting",
+        "plotly_selected",
+        "plotly_hover",
+        "plotly_unhover",
+        "plotly_legenddoubleclick",
+        "plotly_restyle",
+        "plotly_relayout",
+        "plotly_webglcontextlost",
+        "plotly_afterplot",
+        "plotly_autosize",
+        "plotly_deselect",
+        "plotly_doubleclick",
+        "plotly_redraw",
+        "plotly_animated",
+      ]) {
+        this.$el.on(name, (event) => {
+          const args = {
+            ...event,
+            points: event?.points?.map((p) => ({
+              ...p,
+              fullData: undefined,
+              xaxis: undefined,
+              yaxis: undefined,
+            })),
+            xaxes: undefined,
+            yaxes: undefined,
+          };
+          this.$emit(name, args);
+        });
+      }
+    },
+  },
+  data() {
+    return {
+      last_options: {},
+    };
+  },
+  props: {
+    options: Object,
+  },
+});
+
+      app.mount("#app");
+    </script>
+  </body>
+</html>
