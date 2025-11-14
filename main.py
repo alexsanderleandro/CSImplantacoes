@@ -18,11 +18,12 @@ from starlette.responses import Response
 
 from authentication import get_db_connection, verify_user
 from rtf_utils import extract_first_image_from_rtf, limpar_rtf
+from nicegui import ui
 from version import APP_NAME, APP_VERSION
 
 # estilo reutilizável para imagens exibidas em diálogos (mantém linhas curtas)
 IMG_STYLE = "max-width:100%;max-height:60vh;object-fit:contain;display:block;"
-
+ui.page_title(APP_NAME)
 ui = None
 app = None
 
@@ -694,6 +695,40 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
         raise
     ui = _ui
     app = _app
+    # definir título do navegador igual ao nome da aplicação (compatível com várias versões do NiceGUI)
+    try:
+        # ui.title existe em versões recentes do NiceGUI; envolver em try/except para compatibilidade
+        ui.title(sanitize_text(APP_NAME))
+    except Exception:
+        try:
+            # fallback: injetar <title> no head via ui.html (não sanitizando porque APP_NAME já foi sanitizado)
+            ui.html(f"<title>{sanitize_text(APP_NAME)}</title>", sanitize=False)
+        except Exception:
+            pass
+    # garantir que o título seja definido no client-side (override do NiceGUI) — usar script para forçar
+    try:
+        safe_app_js = sanitize_text(APP_NAME).replace("'", "\\'")
+        ui.html(f"<script>document.title = '{safe_app_js}';</script>", sanitize=False)
+    except Exception:
+        pass
+    # caso NiceGUI/cliente sobrescreva o título depois do carregamento, usar um observer
+    try:
+        safe_app_js = sanitize_text(APP_NAME).replace("'", "\\'")
+        observer_script = (
+            "<script>"
+            "(function(){"
+            f"const desired = '{safe_app_js}';"
+            "function setTitle(){ document.title = desired; }"
+            "setTitle();"
+            "const titleEl = document.querySelector('title');"
+            "if (titleEl){ const mo = new MutationObserver(()=> setTitle()); mo.observe(titleEl, { childList:true, characterData:true, subtree:true }); }"
+            "let tries=0; const t = setInterval(()=>{ setTitle(); if(++tries>10) clearInterval(t); }, 500);"
+            "})();"
+            "</script>"
+        )
+        ui.html(observer_script, sanitize=False)
+    except Exception:
+        pass
 
     # rota /static removida (não servimos arquivos estáticos locais)
 
@@ -1080,7 +1115,8 @@ def show_kanban():
 
                         # Cabeçalho do diálogo: título, select de filtro por ano, total e botão fechar
                         with ui.row().classes('items-center justify-between gap-4'):
-                            ui.label('Implantações finalizadas').classes('text-2xl font-bold')
+                            # título do diálogo em branco para contraste com o fundo
+                            ui.label('Implantações finalizadas').classes('text-2xl font-bold text-white')
                             # controles: select e total centralizados verticalmente
                             with ui.column().classes('items-center gap-1'):
                                 # label customizado acima do select para controlar alinhamento
@@ -1106,7 +1142,7 @@ def show_kanban():
                                     pass
                                 # total abaixo do select (texto escuro e centralizado)
                                 total_label = ui.label('Total: 0').classes('text-sm text-white').style('display:block;text-align:center;')
-                            ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('primary')
+                            ui.button('Fechar [ESC]', on_click=lambda _=None: dlg.close()).classes('primary')
 
                         # gráfico removido conforme solicitação; não será injetado no diálogo
 
@@ -1170,9 +1206,9 @@ def show_kanban():
 
                             if count_days > 0:
                                 avg_days = round(sum_days / count_days)
-                                avg_text = f"Média de dias por implantação no período: {avg_days} dias"
+                                avg_text = f"Média de dias por implantação concluída no período: {avg_days} dias"
                             else:
-                                avg_text = "Média de dias por implantação no período: N/A"
+                                avg_text = "Média de dias por implantação concluída no período: N/A"
 
                             # exibir card com a média antes da lista de cards
                             try:
@@ -1478,7 +1514,7 @@ def show_kanban():
                                                         )
                                                         ui.markdown(md)
                                     with ui.row().classes("w-full mt-4 justify-center"):
-                                        ui.button("Fechar", on_click=lambda _=None: dlg.close()).classes("primary")
+                                        ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes("primary")
                                 dlg.open()
 
                             ui.button("RDMs", on_click=_show_rdms_local).classes("secondary")
@@ -1496,7 +1532,7 @@ def show_kanban():
                                             "text-sm text-gray-600"
                                         )
                                     with ui.row().classes("w-full justify-end gap-2"):
-                                        ui.button("Fechar", on_click=lambda _=None: dlg.close()).classes("secondary")
+                                        ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes("secondary")
                                 dlg.open()
 
                             # detectar rapidamente se há imagem extraível para habilitar o botão
@@ -1739,7 +1775,7 @@ def show_kanban():
                                                 "text-sm text-gray-600"
                                             )
                                         with ui.row().classes("w-full justify-end gap-2"):
-                                            ui.button("Fechar", on_click=lambda _=None: dlg.close()).classes(
+                                            ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes(
                                                 "secondary"
                                             )
                                     dlg.open()
@@ -1747,7 +1783,7 @@ def show_kanban():
                                 ui.button("Imagem", on_click=_open_history_image).classes("secondary")
                     # botão fechar centralizado
                     with ui.row().classes("w-full justify-center mt-4"):
-                        ui.button("Fechar", on_click=lambda _: dlg.close()).classes("primary")
+                        ui.button("Fechar [ESC]", on_click=lambda _: dlg.close()).classes("primary")
         dlg.open()
 
     render_board()
