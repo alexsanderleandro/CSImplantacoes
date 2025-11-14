@@ -1532,7 +1532,7 @@ def show_kanban():
 
                                         with ui.row().classes("w-full justify-center"):
                                             with ui.column().classes("w-full max-w-4xl").style(
-                                                "overflow:auto; max-height:60vh;padding-right:8px;"
+                                                "overflow:auto; height:calc(100vh - 160px); padding-right:8px;"
                                             ):
                                                 # para cada situação mostrar total e depois total por tipo
                                                 for situ_key in sorted(situ_map.keys(), key=lambda x: str(x)):
