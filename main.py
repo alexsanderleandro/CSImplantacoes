@@ -249,13 +249,13 @@ def normalize_description(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 COLUMNS = [
-    ("A iniciar", "#d1d5db", 100),
+    ("A iniciar", "#b7d1f8", 100),
     ("Visita pré-implantação", "#a3a3a3", 101),
-    ("Instalação do sistema", "#c8b6ff", 102),
-    ("Implantação em andamento", "#a7f3d0", 103),
-    ("Implantação pausada", "#fef08a", 104),
+    ("Instalação do sistema", "#af95fa", 102),
+    ("Implantação em andamento", "#97c9b1", 103),
+    ("Implantação pausada", "#d3ca89", 104),
     ("Implantação cancelada", "#f87171", 105),
-    ("Visita pós-implantação", "#f5f0d9", 106),
+    ("Visita pós-implantação", "#B9AB6D", 106),
 ]
 COLUMN_MAP = {name: {"color": color, "situacao": situ} for (name, color, situ) in COLUMNS}
 
@@ -500,18 +500,20 @@ def fetch_rdms(num_atendimento):
 
 
 def update_situacao_on_move(num_atendimento, new_situacao_code):
-    sql = "UPDATE CNSAtendimento SET Situacao = ? WHERE NumAtendimento = ?"
+    # Por decisão do cliente, a operação de mover NÃO deve alterar o banco de dados
+    # de forma alguma (nenhum UPDATE ou INSERT). Esta função foi mantida como
+    # placeholder para compatibilidade, mas não realizará nenhuma operação de
+    # escrita no banco. Se for chamada, apenas retorna False indicando que nenhuma
+    # atualização foi feita.
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(sql, (new_situacao_code, num_atendimento))
-        conn.commit()
-        cur.close()
-        conn.close()
-        return True
-    except Exception as e:
-        print("Erro atualizando situacao:", e)
-        return False
+        # opcional: log local para diagnóstico (não persiste no DB)
+        print(f"update_situacao_on_move called for {num_atendimento} -> {new_situacao_code} (no-op)")
+    except Exception:
+        pass
+    return False
+
+
+# note: historic DB inserts for moves were removed — move observations are shown in-memory only
 SQL_ATENDIMENTOS_POR_CLIENTE = """
 select CodCliente, NumAtendimento, Desdobramento, NomeTipoAtendimento, AssuntoAtendimento, Situacao
 from cnsAtendimento
@@ -1012,6 +1014,9 @@ def show_kanban():
     start_col = COLUMNS[0][0]
     column_containers = {}
 
+    # construir mapa reverso: situacao_code -> column_name
+    situ_to_column = {v['situacao']: k for k, v in COLUMN_MAP.items() if v.get('situacao') is not None}
+
     with root:
         # cabeçalho: título + contador de cards (à esquerda) e botão Logout (canto direito)
         cards_data = fetch_kanban_cards()
@@ -1239,9 +1244,9 @@ def show_kanban():
 
                             if count_days > 0:
                                 avg_days = round(sum_days / count_days)
-                                avg_text = f"Média de dias por implantação concluída no período: {avg_days} dias"
+                                avg_text = f"Média de dias por implantação no período: {avg_days} dias"
                             else:
-                                avg_text = "Média de dias por implantação concluída no período: N/A"
+                                avg_text = "Média de dias por implantação no período: N/A"
 
                             # exibir card com a média antes da lista de cards
                             try:
@@ -1363,7 +1368,7 @@ def show_kanban():
                 for col_name, bg_color, _ in COLUMNS:
                     with ui.column().classes("basis-0 flex-1").style("min-width: 12rem;"):
                         ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(
-                            f"background:{bg_color};"
+                            f"background:{bg_color};color:#ffffff !important;"
                         )
                         cards_container = ui.column().classes("p-2")
                         column_containers[col_name] = cards_container
@@ -1506,6 +1511,11 @@ def show_kanban():
                         ui.label(f"Última interação: {ultima}").classes("text-xs text-gray-500 mb-1")
                         if snippet:
                             ui.label(snippet).classes("text-sm text-gray-700 mb-2")
+
+                        # mostrar observação de movimento (informativo em memória) se existir
+                        move_note = card.get('_last_move')
+                        if move_note:
+                            ui.label(move_note).classes('text-sm text-gray-600 mb-1').style('font-style:italic;')
 
                         with ui.row().classes("items-center gap-2"):
                             latest = fetch_latest_iteration(num)
@@ -1710,24 +1720,57 @@ def show_kanban():
                                 if dest == col_name:
                                     ui.notify("O card já está nessa coluna", color="warning")
                                     return
-                                moved = None
-                                for it in column_cards.get(col_name, []):
-                                    if str(it.get("NumAtendimento")) == str(c.get("NumAtendimento")):
-                                        moved = it
-                                        break
-                                if moved:
-                                    column_cards[col_name].remove(moved)
-                                    column_cards[dest].append(moved)
-                                    new_code = COLUMN_MAP.get(dest, {}).get("situacao")
-                                    if new_code is not None:
-                                        ok = update_situacao_on_move(moved.get("NumAtendimento"), new_code)
-                                        if ok:
-                                            ui.notify(f'✔ "{moved.get("NomeCliente")}" movido para "{dest}"')
-                                        else:
-                                            ui.notify("Erro ao atualizar situação", color="negative")
-                                    render_board()
 
-                            ui.button("Mover", on_click=do_move).classes("bg-purple-600 text-white").style("background:#7c3aed !important;color:#ffffff !important;")
+                                # localizar o card atual em qualquer coluna (mais robusto)
+                                found_col = None
+                                moved = None
+                                for col_k, lst in column_cards.items():
+                                    for it in lst:
+                                        try:
+                                            if str(it.get("NumAtendimento")) == str(c.get("NumAtendimento")):
+                                                moved = it
+                                                found_col = col_k
+                                                break
+                                        except Exception:
+                                            continue
+                                    if moved:
+                                        break
+
+                                if not moved:
+                                    ui.notify("Card não encontrado para mover", color="negative")
+                                    return
+
+                                # remover da coluna onde foi encontrado e adicionar na coluna destino
+                                try:
+                                    column_cards.get(found_col, []).remove(moved)
+                                except Exception:
+                                    pass
+                                column_cards.setdefault(dest, []).append(moved)
+
+                                # A operação de mover NÃO deve realizar nenhuma escrita no banco.
+                                # Registrar a movimentação apenas em memória no objeto do card.
+                                try:
+                                    now_str = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+                                    user_name = sanitize_text(logged_user.get('NomeUsuario') or '')
+                                    obs_text = f"Movido em {now_str} — De: {found_col} para: {dest} — Usuário: {user_name}"
+                                    moved['_last_move'] = obs_text
+                                except Exception:
+                                    pass
+                                ui.notify(f'✔ "{moved.get("NomeCliente")}" movido para "{dest}"')
+
+                                render_board()
+
+                            # habilitar mover apenas para usuários autorizados
+                            _allowed_movers = {"Alex", "Angelo.Gabriel", "Marco.Aurelio", "Vinicius.Souza"}
+                            _current_user = sanitize_text(logged_user.get('NomeUsuario') or '')
+                            if _current_user in _allowed_movers:
+                                btn_move = ui.button("Mover", on_click=do_move).classes("bg-purple-600 text-white").style("background:#7c3aed !important;color:#ffffff !important;")
+                            else:
+                                btn_move = ui.button("Mover", on_click=do_move).classes("bg-purple-600 text-white").props('disabled').style("background:#7c3aed !important;color:#ffffff !important;")
+                                try:
+                                    ui.tooltip(btn_move, "Mover cards somente habilitado para usuários autorizados")
+                                except Exception:
+                                    pass
 
     def show_history_dialog(num_atendimento):
         hist = fetch_history(num_atendimento)
