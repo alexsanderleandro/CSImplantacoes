@@ -512,6 +512,39 @@ def update_situacao_on_move(num_atendimento, new_situacao_code):
     except Exception as e:
         print("Erro atualizando situacao:", e)
         return False
+SQL_ATENDIMENTOS_POR_CLIENTE = """
+select CodCliente, NumAtendimento, Desdobramento, NomeTipoAtendimento, AssuntoAtendimento, Situacao
+from cnsAtendimento
+where CodCliente = ?
+"""
+
+
+def fetch_atendimentos_por_cliente(cod_cliente):
+    """Retorna lista de dicionários com os atendimentos do cliente identificado por `cod_cliente`.
+
+    Se ocorrer qualquer erro de consulta, retorna lista vazia.
+    """
+    try:
+        # get_db_connection é o helper utilizado pelo restante do módulo
+        conn = get_db_connection()
+    except Exception:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(SQL_ATENDIMENTOS_POR_CLIENTE, (cod_cliente,))
+        cols = [c[0] for c in (cur.description or [])]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        try:
+            cur.close()
+        except Exception:
+            pass
+        return rows
+    except Exception:
+        try:
+            cur.close()
+        except Exception:
+            pass
+        return []
 
 
 # ---------- UI ----------
@@ -1489,30 +1522,57 @@ def show_kanban():
                                     if not rdms:
                                         ui.label("Nenhuma RDM encontrada").classes("text-sm text-gray-500")
                                     else:
+                                        # organizar por SituaçãoRDM e dentro por NomeTipoRDM com totalizadores
+                                        from collections import defaultdict
+
+                                        situ_map = defaultdict(list)
+                                        for r in rdms:
+                                            key = r.get("SituacaoRDM")
+                                            situ_map[key].append(r)
+
                                         with ui.row().classes("w-full justify-center"):
                                             with ui.column().classes("w-full max-w-4xl").style(
                                                 "overflow:auto; max-height:60vh;padding-right:8px;"
                                             ):
-                                                for r in rdms:
-                                                    with ui.card().classes("mb-2 p-3 w-full"):
-                                                        numrdm = sanitize_text(r.get("IdRdm") or "")
-                                                        desdob_raw = r.get("Desdobramento")
-                                                        desdob = (
-                                                            sanitize_text(desdob_raw) if desdob_raw is not None else ""
-                                                        )
-                                                        tipordm = sanitize_text(r.get("NomeTipoRDM") or "")
-                                                        situ = sanitize_text(r.get("SituacaoRDM") or "")
-                                                        reg = r.get("RegInclusao")
-                                                        data_str = _format_datetime(reg)
-                                                        desc = sanitize_text(r.get("Descricao") or "")
-                                                        md = (
-                                                            f"**Nº:** {numrdm} / {desdob}\n\n"
-                                                            f"**Tipo de RDM:** {tipordm}\n\n"
-                                                            f"**Situação:** {situ}\n\n"
-                                                            f"**Abertura:** {data_str}\n\n"
-                                                            f"**Descrição:** {desc}"
-                                                        )
-                                                        ui.markdown(md)
+                                                # para cada situação mostrar total e depois total por tipo
+                                                for situ_key in sorted(situ_map.keys(), key=lambda x: str(x)):
+                                                    group = situ_map[situ_key]
+                                                    situ_label = sanitize_text(str(situ_key) if situ_key is not None else "")
+                                                    total_sit = len(group)
+                                                    ui.label(f"{situ_label}: {total_sit}").classes('text-sm font-semibold mt-2 mb-1')
+
+                                                    # agrupar por tipo de RDM
+                                                    type_map = defaultdict(list)
+                                                    for r in group:
+                                                        t = r.get("NomeTipoRDM") or ""
+                                                        type_map[t].append(r)
+
+                                                    for tname in sorted(type_map.keys()):
+                                                        entries = type_map[tname]
+                                                        cnt = len(entries)
+                                                        t_display = sanitize_text(str(tname)) if tname is not None else ""
+                                                        # mostrar total por tipo (badge-like)
+                                                        ui.label(f"{t_display}: {cnt}").style('background:#6b7280;color:#ffffff;padding:4px 8px;border-radius:6px;').classes('text-sm font-medium ml-0 mt-0')
+
+                                                        # listar cada RDM do tipo
+                                                        for r in entries:
+                                                            numrdm = sanitize_text(r.get("IdRdm") or "")
+                                                            desdob_raw = r.get("Desdobramento")
+                                                            desdob = sanitize_text(str(desdob_raw) if desdob_raw is not None else "")
+                                                            tipordm = sanitize_text(r.get("NomeTipoRDM") or "")
+                                                            situ = sanitize_text(r.get("SituacaoRDM") or "")
+                                                            reg = r.get("RegInclusao")
+                                                            data_str = _format_datetime(reg)
+                                                            desc = sanitize_text(r.get("Descricao") or "")
+                                                            md = (
+                                                                f"**Nº:** {numrdm} / {desdob}\n\n"
+                                                                f"**Tipo de RDM:** {tipordm}\n\n"
+                                                                f"**Situação:** {situ}\n\n"
+                                                                f"**Abertura:** {data_str}\n\n"
+                                                                f"**Descrição:** {desc}"
+                                                            )
+                                                            with ui.card().classes("mb-2 p-3 w-full"):
+                                                                ui.markdown(md)
                                     with ui.row().classes("w-full mt-4 justify-center"):
                                         ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes("primary")
                                 dlg.open()
@@ -1554,6 +1614,92 @@ def show_kanban():
                             # mostrar apenas o botão "Imagem" quando de fato há uma imagem extraível
                             if img_available:
                                 ui.button("Imagem", on_click=_open_image_dialog_local).classes("secondary")
+
+                            # botão Atendimentos: abre diálogo com totalização e lista agrupada
+                            def _show_atendimentos_local(_=None, c=card):
+                                try:
+                                    # tentar obter o código do cliente a partir do card
+                                    cod_cliente = (
+                                        c.get('CodCliente')
+                                        or c.get('CodigoCliente')
+                                        or c.get('CodCli')
+                                        or c.get('CodClienteCliente')
+                                    )
+                                except Exception:
+                                    cod_cliente = None
+
+                                if not cod_cliente:
+                                    ui.notify('Código do cliente não disponível para este card', color='warning')
+                                    return
+
+                                rows = fetch_atendimentos_por_cliente(cod_cliente) or []
+                                total = len(rows)
+
+                                # agrupar por situacao e por NomeTipoAtendimento
+                                from collections import defaultdict
+
+                                situ_groups = defaultdict(list)
+                                for r in rows:
+                                    try:
+                                        s = r.get('Situacao')
+                                        s_val = int(s) if s is not None else None
+                                    except Exception:
+                                        try:
+                                            s_val = int(str(r.get('Situacao')))
+                                        except Exception:
+                                            s_val = None
+                                    situ_groups[s_val].append(r)
+
+                                dlg = ui.dialog()
+                                dlg.classes('w-full')
+                                # centralizar um único card branco com largura máxima
+                                with dlg:
+                                    with ui.row().classes('w-full justify-center'):
+                                        with ui.column().classes('w-full max-w-3xl'):
+                                            # card branco com espaçamento interno
+                                            with ui.card().classes('p-3').style('background:#ffffff;color:#000000;line-height:1.1;'):
+                                                # título removido para layout compacto
+                                                ui.label(f"Total de atendimentos: {total}").style('background:#7f1d1d;color:#ffffff;padding:4px;border-radius:6px;').classes('text-sm font-semibold mb-0')
+
+                                                # resumo por situação (cada item em sua linha)
+                                                aberto_count = len(situ_groups.get(0, []))
+                                                concluido_count = len(situ_groups.get(1, []))
+                                                ui.label(f"Em aberto: {aberto_count}").classes('text-sm mb-0')
+                                                ui.label(f"Concluídos: {concluido_count}").classes('text-sm mb-0')
+
+                                                # listar detalhes por grupo (0 = aberto, 1 = concluído)
+                                                for situ_code, situ_label in ((0, 'Em aberto'), (1, 'Concluídos')):
+                                                    group = situ_groups.get(situ_code, [])
+                                                    ui.label(f"{situ_label}: {len(group)}").classes('text-sm font-semibold mt-1 mb-0')
+                                                    if not group:
+                                                        continue
+
+                                                    # agrupar por NomeTipoAtendimento
+                                                    type_map = defaultdict(list)
+                                                    for r in group:
+                                                        t = r.get('NomeTipoAtendimento') or ''
+                                                        type_map[t].append(r)
+
+                                                    for tname in sorted(type_map.keys()):
+                                                        entries = type_map[tname]
+                                                        count = len(entries)
+                                                        t_display = sanitize_text(str(tname)) if tname is not None else ''
+                                                        ui.label(f"{t_display}: {count}").style('background:#6b7280;color:#ffffff;padding:4px 8px;border-radius:6px;').classes('text-sm font-semibold ml-0 mt-0')
+                                                        for r in entries:
+                                                            numa = sanitize_text(str(r.get('NumAtendimento') or ''))
+                                                            desd_raw = r.get('Desdobramento')
+                                                            desd = sanitize_text(str(desd_raw) if desd_raw is not None else '')
+                                                            assunto = sanitize_text(str(r.get('AssuntoAtendimento') or ''))
+                                                            # cada atendimento em linha própria
+                                                            ui.label(f"{numa}/{desd} — {assunto}").classes('text-sm ml-2 mb-0')
+
+                                                # botão fechar centralizado abaixo (menos espaço)
+                                                with ui.row().classes('w-full justify-center mt-2'):
+                                                    ui.button('Fechar [ESC]', on_click=lambda _=None: dlg.close()).classes('primary')
+
+                                dlg.open()
+
+                            ui.button('Atendimentos', on_click=_show_atendimentos_local).classes('secondary')
 
                             # mover
                             options = [name for (name, _, _) in COLUMNS]
