@@ -55,19 +55,10 @@ IMAGE_CACHE_DIR = Path(os.getenv("IMAGE_CACHE_DIR", "cache_images"))
 TEMP_IMAGE_SUBDIR = "tmp"
 IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# arquivo de log leve para mensagens de debug relacionadas a imagens temporárias.
-IMAGE_DEBUG_LOG = IMAGE_CACHE_DIR / "temp_img_debug.log"
-
-
+# debug logging disabled: _append_image_debug is a no-op to avoid writing files
 def _append_image_debug(msg: str):
-    """Append a timestamped debug line to IMAGE_DEBUG_LOG. Non-fatal on error."""
-    try:
-        ts = datetime.utcnow().isoformat() + "Z"
-        with open(IMAGE_DEBUG_LOG, "a", encoding="utf-8") as f:
-            f.write(f"{ts} {msg}\n")
-    except Exception:
-        # best-effort logging only
-        pass
+    """No-op placeholder kept for compatibility with previous debug calls."""
+    return None
 
 
 def temp_image_exists_on_disk(key: str) -> bool:
@@ -119,43 +110,23 @@ def temp_image_endpoint(request: Request, key: str):
                             mime_guess = "image/gif"
                         elif ext == ".webp":
                             mime_guess = "image/webp"
-                        print(
-                            f"[DEBUG] temp_image_endpoint: pid={os.getpid()} serving from disk path={p} "
-                            f"key={key} mime={mime_guess} bytes={len(data)}"
-                        )
-                        try:
-                            _append_image_debug(
-                                f"[DEBUG] temp_image_endpoint: pid={os.getpid()} serving from disk path={p} key={key} mime={mime_guess} bytes={len(data)}"
-                            )
-                        except Exception:
-                            pass
+                        # debug logging removed
                         return Response(content=data, media_type=mime_guess)
                     except Exception:
                         continue
-        except Exception as e:
-            print(f"[DEBUG] temp_image_endpoint disk lookup error for key={key}: {e}")
-            try:
-                _append_image_debug(f"[DEBUG] temp_image_endpoint disk lookup error for key={key}: {e}")
-            except Exception:
-                pass
+        except Exception:
+            # disk lookup error: debug logging removed
+            pass
 
         # If not found on disk, return 404. We intentionally removed the
         # process-local in-memory fallback because the app no longer relies on
         # per-process memory cache for temp images.
-        print(f"[DEBUG] temp_image_endpoint: no entry on disk for key={key}")
-        try:
-            _append_image_debug(f"[DEBUG] temp_image_endpoint: no entry on disk for key={key}")
-        except Exception:
-            pass
+        # no entry on disk for key — debug logging removed
         raise HTTPException(status_code=404)
     except HTTPException:
         raise
-    except Exception as e:
-        print(f"[DEBUG] temp_image_endpoint error for key={key}: {e}")
-        try:
-            _append_image_debug(f"[DEBUG] temp_image_endpoint error for key={key}: {e}")
-        except Exception:
-            pass
+    except Exception:
+        # temp_image_endpoint error: debug logging removed
         raise HTTPException(status_code=500)
 
 
@@ -241,30 +212,13 @@ def save_temp_image_and_get_url(key: str, img_bytes: bytes, mime: str) -> str:
                 os.utime(p, None)
             except Exception:
                 pass
-            print(
-                f"[DEBUG] saved temp image to disk path={p} pid={os.getpid()} "
-                f"mime={mime} bytes={len(processed_bytes)}"
-            )
-            try:
-                _append_image_debug(
-                    f"[DEBUG] saved temp image to disk path={p} pid={os.getpid()} mime={mime} bytes={len(processed_bytes)}"
-                )
-            except Exception:
-                pass
-        except Exception as e:
-            print(f"[DEBUG] failed to persist temp image to disk for key={key}: {e}")
-            try:
-                _append_image_debug(f"[DEBUG] failed to persist temp image to disk for key={key}: {e}")
-            except Exception:
-                pass
+            # saved temp image to disk — debug logging removed
+        except Exception:
+            # failed to persist temp image to disk — debug logging removed
             return None
         return f"/_temp_img/{key}"
-    except Exception as e:
-        print(f"[DEBUG] unexpected error saving temp image for key={key}: {e}")
-        try:
-            _append_image_debug(f"[DEBUG] unexpected error saving temp image for key={key}: {e}")
-        except Exception:
-            pass
+    except Exception:
+        # unexpected error saving temp image — debug logging removed
         return None
 
 
@@ -639,50 +593,30 @@ def clean_cache():
         now = time.time()
         ttl_seconds = CACHE_TTL_DAYS * 24 * 3600
         removed = 0
-        # remover flags e arquivos de cache no diretório principal
-        for fname in os.listdir(CACHE_DIR):
-            full = os.path.join(CACHE_DIR, fname)
-            try:
-                # ignorar subdiretórios (p.ex. tmp/) nesta passagem
-                if not os.path.isfile(full):
-                    continue
-                mtime = os.path.getmtime(full)
-                age = now - mtime
-                if age > ttl_seconds:
-                    try:
-                        os.remove(full)
-                        removed += 1
-                    except Exception:
-                        pass
-            except Exception:
-                continue
 
-        # também limpar imagens temporárias salvas em cache_images/tmp/
-        try:
-            tmp_dir = os.path.join(CACHE_DIR, TEMP_IMAGE_SUBDIR)
-            if os.path.isdir(tmp_dir):
-                for tf in os.listdir(tmp_dir):
-                    tfull = os.path.join(tmp_dir, tf)
-                    try:
-                        if not os.path.isfile(tfull):
-                            continue
-                        mtime = os.path.getmtime(tfull)
-                        age = now - mtime
-                        if age > ttl_seconds:
-                            try:
-                                os.remove(tfull)
-                                removed += 1
-                            except Exception:
-                                pass
-                    except Exception:
-                        continue
-        except Exception:
-            pass
+        # percorrer arquivos no diretório de cache (inclui subdiretórios)
+        for root_dir, dirs, files in os.walk(CACHE_DIR):
+            # preservar o subdiretório TEMP_IMAGE_SUBDIR (ex: tmp/) — iremos limpar seus arquivos, mas não o próprio diretório
+            for fname in files:
+                try:
+                    full = os.path.join(root_dir, fname)
+                    # checar mtime
+                    mtime = os.path.getmtime(full)
+                    if (now - mtime) > ttl_seconds:
+                        try:
+                            os.remove(full)
+                            removed += 1
+                        except Exception:
+                            pass
+                except Exception:
+                    continue
+
         if removed:
-            print(f"[DEBUG] clean_cache: removed {removed} expired items from cache")
+            # debug print removed
+            pass
         return removed
     except Exception as e:
-        print(f"[DEBUG] clean_cache error: {e}")
+        # debug print removed
         return 0
 
     # após remoção de arquivos, tentar remover subdiretórios vazios (ex: tmp/)
@@ -697,7 +631,6 @@ def clean_cache():
                     if not os.listdir(full):
                         try:
                             os.rmdir(full)
-                            print(f"[DEBUG] clean_cache: removed empty dir {full}")
                         except Exception:
                             pass
             except Exception:
@@ -729,13 +662,14 @@ def start_periodic_cache_clean(interval_hours=None):
                 try:
                     clean_cache()
                 except Exception as e:
-                    print(f"[DEBUG] periodic clean_cache error: {e}")
+                    # debug print removed
+                    pass
         except Exception as e:
-            print(f"[DEBUG] cache cleaner thread exiting: {e}")
+            # debug print removed
+            pass
 
     t = threading.Thread(target=_worker, name="cache-cleaner", daemon=True)
     t.start()
-    print(f"[DEBUG] Started cache cleaner thread with interval {interval} hour(s)")
 
 
 # NOTE: removed start_periodic_temp_cache_clean because the application no
@@ -761,14 +695,16 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
     ui = _ui
     app = _app
 
+    # rota /static removida (não servimos arquivos estáticos locais)
+
     # registrar handler de shutdown para limpar o cache automaticamente
     try:
         def _on_shutdown():
             try:
                 removed = clean_cache()
-                print(f"[DEBUG] clean_cache on shutdown removed {removed} item(s)")
             except Exception as e:
-                print(f"[DEBUG] clean_cache on shutdown error: {e}")
+                # debug print removed
+                pass
 
         # FastAPI/Starlette suporta add_event_handler para 'shutdown'
         try:
@@ -784,9 +720,9 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
     # registrar endpoint dinâmico para servir imagens em memória: /_temp_img/{key}
     try:
         app.add_api_route("/_temp_img/{key}", temp_image_endpoint, methods=["GET"])
-        print("[DEBUG] Registered dynamic /_temp_img/{key} endpoint (in-memory)")
     except Exception as e:
-        print(f"[DEBUG] Failed to register dynamic temp image endpoint: {e}")
+        # debug print removed
+        pass
 
     # rota fallback (HTML) para 'Implantações finalizadas'
     # Evita usar `ui.page` (que não pode ser misturado com UI no escopo global).
@@ -877,6 +813,9 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
     except Exception:
         pass
 
+    # página de teste do gráfico removida (opção desabilitada)
+    # endpoint PNG do gráfico removido (não utilizado)
+
     # criar contêiner raiz e footer
     root = ui.element("div").classes("w-full p-4")
     footer = ui.footer()
@@ -889,7 +828,8 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
         try:
             removed_on_start = clean_cache()
             if removed_on_start:
-                print(f"[DEBUG] clean_cache at startup removed {removed_on_start} item(s)")
+                # debug print removed
+                pass
         except Exception:
             pass
 
@@ -907,7 +847,6 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
         if test_num:
             try:
                 na = int(test_num)
-                print(f"[DEBUG] TEST_NUM_ATENDIMENTO={na} detected: attempting to pre-populate temp image on disk")
                 latest = fetch_latest_iteration(na)
                 if latest and isinstance(latest, dict):
                     rtf = latest.get("TextoIteracao") or ""
@@ -923,27 +862,24 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
                                     f"[DEBUG] TEST populate: will write temp image path={expected_path} "
                                     f"exists_before={expected_path.exists()} ext={ext}"
                                 )
-                                print(msg)
-                                try:
-                                    _append_image_debug(msg)
-                                except Exception:
-                                    pass
+                                # debug logging removed
                             except Exception:
                                 pass
                             url = save_temp_image_and_get_url(key, img_b, mime)
                             set_image_flag_for_content(rtf, True)
-                            print(
-                                f"[DEBUG] TEST populate: saved temp image key={key} url={url} "
-                                f"mime={mime} bytes={len(img_b)}"
-                            )
+                            # debug print removed
                         else:
-                            print("[DEBUG] TEST populate: no image extracted from latest iteration")
+                            # debug print removed
+                            pass
                     except Exception as e:
-                        print(f"[DEBUG] TEST populate: extract error: {e}")
+                        # debug print removed
+                        pass
                 else:
-                    print(f"[DEBUG] TEST populate: no latest iteration found for {na}")
+                    # debug print removed
+                    pass
             except Exception as e:
-                print(f"[DEBUG] TEST populate error: {e}")
+                # debug print removed
+                pass
     except Exception:
         pass
 
@@ -973,7 +909,7 @@ def show_login():
             with ui.column().classes("items-center w-full max-w-sm gap-2"):
                 # cartão com fundo e sombra ao redor do formulário para destaque
                 with ui.card().classes("w-full p-6 rounded shadow-md").style("background:#ffffff;"):
-                    ui.markdown(f"## {APP_NAME}  Login").classes("text-center")
+                    ui.markdown(f"## {APP_NAME}").classes("text-center")
                     # inputs responsivos para caberem dentro do cartão
                     username = ui.input("Usuário").classes("w-full").props("autofocus")
                     password = ui.input("Senha", password=True).classes("w-full")
@@ -1011,14 +947,23 @@ def show_kanban():
     with root:
         # cabeçalho: título + contador de cards (à esquerda) e botão Logout (canto direito)
         cards_data = fetch_kanban_cards()
-        # debug console log to help verify how many rows were fetched for the Kanban
-        print(f"[DEBUG] show_kanban: {len(cards_data)} cards loaded")
+        # debug console log removed
         with ui.row().classes("w-full items-start mb-2 justify-between"):
             with ui.column().classes("items-start"):
-                ui.label(
-                    f"🗂️ {sanitize_text(APP_NAME)} — "
-                    f"Usuário: {sanitize_text(logged_user.get('NomeUsuario', ''))}"
-                ).classes("text-2xl font-bold")
+                # mostrar o nome do APP em negrito, mantendo o label 'Usuário' e o nome em fonte normal
+                try:
+                    safe_app = sanitize_text(APP_NAME)
+                    safe_user = sanitize_text(logged_user.get('NomeUsuario', ''))
+                    header_html = (
+                        f"<div class='text-2xl'>"
+                        f"🗂️ <span class='font-semibold'>{safe_app}</span> — "
+                        f"<span class='font-normal'>Usuário: {safe_user}</span>"
+                        f"</div>"
+                    )
+                    ui.html(header_html, sanitize=False)
+                except Exception:
+                    # fallback simples caso algo dê errado
+                    ui.label(f"🗂️ {sanitize_text(APP_NAME)} — Usuário: {sanitize_text(logged_user.get('NomeUsuario', ''))}").classes("text-2xl")
                 ui.label(f"{len(cards_data)} cards carregados").classes("text-sm text-gray-500")
 
             # botão de logout posicionado à direita do cabeçalho
@@ -1094,7 +1039,8 @@ def show_kanban():
             def _open_implantacoes_dialog(_=None):
                 try:
                     cards = fetch_implantacoes_finalizadas() or []
-                except Exception:
+                except Exception as e:
+                    # debug print removed
                     cards = []
                 dlg = ui.dialog()
                 dlg.classes('w-full max-w-6xl')
@@ -1120,14 +1066,17 @@ def show_kanban():
                         processed = []
                         for c in cards:
                             abertura = _to_dt(c.get('Abertura'))
-                            if abertura:
-                                years.add(abertura.year)
+                            # usar o ano da data de conclusão (UltimaIteracao) para o filtro
+                            ultima_dt = _to_dt(c.get('UltimaIteracao'))
+                            if ultima_dt:
+                                years.add(ultima_dt.year)
                             processed.append((c, abertura))
 
 
                         # ordenar anos em ordem decrescente para mostrar o mais recente primeiro
                         years_list = sorted(years, reverse=True)
-                        options = [""] + [str(y) for y in years_list]
+                        # incluir opção 'Todos' para mostrar todo o período quando nada for selecionado
+                        options = ["Todos"] + [str(y) for y in years_list]
 
                         # Cabeçalho do diálogo: título, select de filtro por ano, total e botão fechar
                         with ui.row().classes('items-center justify-between gap-4'):
@@ -1140,7 +1089,7 @@ def show_kanban():
                                 # criaremos um dropdown customizado em HTML para permitir centralizar as opções
                                 year_select = ui.select(
                                     options,
-                                    value="",
+                                    value="Todos",
                                     on_change=lambda _=None: render_cards(),
                                 ).classes('w-48').props('id="year_filter_select"').style('display:none;')
 
@@ -1159,6 +1108,8 @@ def show_kanban():
                                 total_label = ui.label('Total: 0').classes('text-sm text-white').style('display:block;text-align:center;')
                             ui.button('Fechar', on_click=lambda _=None: dlg.close()).classes('primary')
 
+                        # gráfico removido conforme solicitação; não será injetado no diálogo
+
                         # injetar CSS local para centralizar o label e as opções do select
                         try:
                             ui.html(
@@ -1174,8 +1125,9 @@ def show_kanban():
                         def render_cards():
                             # ler seleção e filtrar
                             sel = year_select.value
+                            # interpretar 'Todos' ou valor vazio como sem filtro (None)
                             try:
-                                yf = int(sel) if sel else None
+                                yf = int(sel) if sel and sel != "Todos" else None
                             except Exception:
                                 yf = None
                             try:
@@ -1183,16 +1135,18 @@ def show_kanban():
                             except Exception:
                                 pass
 
-                            # construir lista filtrada, ordenar por ÚltimaIteração (desc) e atualizar total
+                            # construir lista filtrada (filtrando pelo ano de conclusão),
+                            # ordenar por ÚltimaIteracao (desc) e atualizar total
                             to_show = []
                             for c, abertura in processed:
-                                if yf and (not abertura or abertura.year != yf):
+                                ultima_dt = _to_dt((c or {}).get('UltimaIteracao'))
+                                if yf and (not ultima_dt or ultima_dt.year != yf):
                                     continue
-                                to_show.append((c, abertura))
+                                to_show.append((c, abertura, ultima_dt))
                             try:
-                                # ordenar por UltimaIteracao (campo pode ser string ou datetime)
+                                # ordenar por UltimaIteracao (já extraído em posição 2 da tupla)
                                 to_show.sort(
-                                    key=lambda tup: (_to_dt((tup[0] or {}).get('UltimaIteracao')) or datetime.min),
+                                    key=lambda tup: (tup[2] or datetime.min),
                                     reverse=True,
                                 )
                             except Exception:
@@ -1202,10 +1156,36 @@ def show_kanban():
                             except Exception:
                                 pass
 
-                            for c, abertura in to_show:
+
+                            # calcular média de dias por implantação no período filtrado
+                            sum_days = 0
+                            count_days = 0
+                            for c, abertura, ultima in to_show:
+                                try:
+                                    if abertura and ultima:
+                                        sum_days += max(0, (ultima - abertura).days)
+                                        count_days += 1
+                                except Exception:
+                                    continue
+
+                            if count_days > 0:
+                                avg_days = round(sum_days / count_days)
+                                avg_text = f"Média de dias por implantação no período: {avg_days} dias"
+                            else:
+                                avg_text = "Média de dias por implantação no período: N/A"
+
+                            # exibir card com a média antes da lista de cards
+                            try:
+                                with cards_container:
+                                    # card com fundo vermelho escuro e texto branco
+                                    with ui.card().classes('mb-4 p-3 w-full').style('background:#7f1d1d;color:#ffffff;'):
+                                        ui.label(avg_text).classes('text-lg font-semibold text-white')
+                            except Exception:
+                                pass
+
+                            for c, abertura, ultima in to_show:
                                 num = c.get('NumAtendimento')
                                 nome = sanitize_text(c.get('NomeCliente') or '-')
-                                ultima = _to_dt(c.get('UltimaIteracao'))
                                 abertura_str = abertura.strftime('%Y-%m-%d') if abertura else '-'
                                 ultima_str = ultima.strftime('%Y-%m-%d %H:%M:%S') if ultima else '-'
                                 periodo = ''
@@ -1216,15 +1196,32 @@ def show_kanban():
                                     periodo = ''
                                 with cards_container:
                                     with ui.card().classes('mb-2 p-3 w-full'):
-                                        ui.row().classes('items-center justify-between')
-                                        ui.label(f"{nome}").classes('font-semibold')
-                                        ui.label(f"#{num}").classes('text-sm text-gray-600')
+                                        # Cabeçalho: Nome do cliente seguido do período (se disponível)
+                                        # construir cabeçalho: nome + período (período em azul escuro)
+                                        try:
+                                            safe_nome = sanitize_text(nome)
+                                            safe_periodo = sanitize_text(periodo) if periodo else ""
+                                            if safe_periodo:
+                                                # usar !important para evitar que regras de estilo externas
+                                                # sobrescrevam a cor desejada do texto do período
+                                                # usar um azul mais visível (blue-800) para contraste com o fundo
+                                                header_html = (
+                                                    f"<div class='font-semibold'>{safe_nome} - "
+                                                    f"<span style=\"color:#1e40af !important;\">{safe_periodo}</span></div>"
+                                                )
+                                            else:
+                                                header_html = f"<div class='font-semibold'>{safe_nome}</div>"
+                                        except Exception:
+                                            header_html = f"<div class='font-semibold'>{sanitize_text(nome)}</div>"
+                                        with ui.row().classes('items-center justify-between'):
+                                            ui.html(header_html, sanitize=False)
+                                            ui.label(f"#{num}").classes('text-sm text-gray-600')
+                                        # Detalhes abaixo do cabeçalho
                                         ui.label(f"Abertura: {abertura_str}").classes('text-xs text-gray-500')
                                         ui.label(f"Conclusão: {ultima_str}").classes('text-xs text-gray-500')
-                                        ui.label(periodo).classes('text-sm text-gray-600')
                                         # mostrar analista (NomeUsuario)
                                         analista_lbl = sanitize_text(c.get('NomeUsuario') or '-')
-                                        ui.label(f"Analista: {analista_lbl}").classes('text-sm text-gray-600')
+                                        ui.label(f"Analista responsável: {analista_lbl}").classes('text-sm text-gray-600')
 
                         # renderizar inicialmente (sem filtro)
                         render_cards()
@@ -1507,21 +1504,16 @@ def show_kanban():
                             try:
                                 cached = get_image_flag_for_content(texto_raw)
                                 key = _image_cache_key(texto_raw)
-                                print(f"[DEBUG] card #{num} image cache key={key} cached={cached}")
                                 if cached is None:
                                     try_img, try_mime = extract_first_image_from_rtf(texto_raw)
                                     img_available = bool(try_img and try_mime)
-                                    # split debug into two prints to avoid long line length
-                                    print(f"[DEBUG] card #{num} extract tried -> has_image={img_available}")
-                                    print(f"[DEBUG] card #{num} mime={try_mime}")
+                                    # debug prints removed
                                     # gravar no cache booleano
                                     set_image_flag_for_content(texto_raw, img_available)
                                 else:
                                     img_available = bool(cached)
-                                    print(f"[DEBUG] card #{num} using cached value -> has_image={img_available}")
                             except Exception as e:
                                 img_available = False
-                                print(f"[DEBUG] card #{num} image detection error: {e}")
 
                             # mostrar apenas o botão "Imagem" quando de fato há uma imagem extraível
                             if img_available:
@@ -1670,18 +1662,14 @@ def show_kanban():
                             try:
                                 cached = get_image_flag_for_content(rtf_content)
                                 key = _image_cache_key(rtf_content)
-                                print(f"[DEBUG] history image cache key={key} cached={cached}")
                                 if cached is None:
                                     ib, imime = extract_first_image_from_rtf(rtf_content)
                                     img_exists = bool(ib and imime)
-                                    print(f"[DEBUG] history extract tried -> has_image={img_exists} mime={imime}")
                                     set_image_flag_for_content(rtf_content, img_exists)
                                 else:
                                     img_exists = bool(cached)
-                                    print(f"[DEBUG] history using cached value -> has_image={img_exists}")
                             except Exception as e:
                                 img_exists = False
-                                print(f"[DEBUG] history image detection error: {e}")
 
                             if img_exists:
 
@@ -1689,17 +1677,11 @@ def show_kanban():
                                     try:
                                         key = _image_cache_key(rtf)
                                         cached_now = get_image_flag_for_content(rtf)
-                                        print(f"[DEBUG] history click image key={key} cached={cached_now}")
                                     except Exception:
                                         pass
                                     try:
                                         img_b, mime = extract_first_image_from_rtf(rtf)
-                                        print(
-                                            "[DEBUG] history click extract -> has_image="
-                                            f"{bool(img_b and mime)} mime={mime} bytes_len={len(img_b) if img_b else 0}"
-                                        )
                                     except Exception as e:
-                                        print(f"[DEBUG] history click extract error: {e}")
                                         img_b, mime = None, None
                                     dlg = ui.dialog()
                                     dlg.classes("w-full max-w-6xl")
@@ -1714,11 +1696,7 @@ def show_kanban():
                                                     f"[DEBUG] history will write temp image path={expected_path} "
                                                     f"exists_before={expected_path.exists()} ext={ext}"
                                                 )
-                                                print(msg)
-                                                try:
-                                                    _append_image_debug(msg)
-                                                except Exception:
-                                                    pass
+                                                # debug logging removed
                                             except Exception:
                                                 pass
                                             url = save_temp_image_and_get_url(key, img_b, mime)
@@ -1733,7 +1711,7 @@ def show_kanban():
                                                         f"{os.getpid()} for key={key} url={url} "
                                                         f"present_on_disk={present}"
                                                     )
-                                                    print(msg)
+                                                    # debug print removed
                                                 except Exception:
                                                     pass
                                                 # Use relative URL to avoid cross-host issues
