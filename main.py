@@ -270,6 +270,7 @@ SELECT
     A.CodClassificacaoAtendimento,
     C.NomeCliente,
     A.Situacao,
+	U.NomeUsuario,
     (
         SELECT MAX(I2.RegInclusao)
         FROM AtendimentoIteracao I2 WITH (NOLOCK)
@@ -287,6 +288,8 @@ FROM CNSAtendimento A
 INNER JOIN CnsClientes C WITH (NOLOCK)
     ON A.CodCliente = C.CodCliente
     AND A.CodEmpresa = C.CodEmpresa
+INNER JOIN Usuarios U WITH (NOLOCK)
+    ON A.CodUsuario = U.CodUsuario
 WHERE
     A.AssuntoAtendimento = N'Implantação'
     AND A.Situacao = 0
@@ -1450,11 +1453,24 @@ def show_kanban():
                     with ui.card().classes("mb-3 shadow-sm").style(
                         f"border-left:4px solid {COLUMN_MAP.get(col_name, {}).get('color', '#ffffff')};"
                     ):
-                        # header: cliente + id
-                        with ui.row().classes("items-center justify-between w-full"):
+                        # header: cliente, responsável e número do atendimento (num abaixo)
+                        try:
                             ui.label(cliente).classes("font-semibold text-lg")
-                            with ui.row().classes("items-center"):
-                                ui.label(f"#{num}").classes("text-sm text-gray-600 ml-2")
+                        except Exception:
+                            ui.label(cliente).classes("font-semibold text-lg")
+
+                        # Mostrar responsável (NomeUsuario) vindo do select principal
+                        try:
+                            responsavel = sanitize_text(card.get('NomeUsuario') or '-')
+                            ui.label(f"Responsável: {responsavel}").classes("text-sm text-gray-600 mt-0 mb-0")
+                        except Exception:
+                            pass
+
+                        # Mostrar número do atendimento em linha própria abaixo do cliente
+                        try:
+                            ui.label(f"Atend.: #{num}").classes("text-sm text-gray-600 mt-1 mb-1")
+                        except Exception:
+                            ui.label(f"#{num}").classes("text-sm text-gray-600 ml-2")
 
                         # Abertura (dias em aberto) e Próximo contato
                         abertura_val = card.get("Abertura")
@@ -1762,66 +1778,20 @@ def show_kanban():
 
                             ui.button('Atendimentos', on_click=_show_atendimentos_local).classes('secondary')
 
-                            # mover
-                            options = [name for (name, _, _) in COLUMNS]
-                            sel = ui.select(options, value=col_name).classes("w-full")
-
-                            def do_move(_, c=card, select_widget=sel):
-                                dest = select_widget.value
-                                if dest == col_name:
-                                    ui.notify("O card já está nessa coluna", color="warning")
-                                    return
-
-                                # localizar o card atual em qualquer coluna (mais robusto)
-                                found_col = None
-                                moved = None
-                                for col_k, lst in column_cards.items():
-                                    for it in lst:
-                                        try:
-                                            if str(it.get("NumAtendimento")) == str(c.get("NumAtendimento")):
-                                                moved = it
-                                                found_col = col_k
-                                                break
-                                        except Exception:
-                                            continue
-                                    if moved:
-                                        break
-
-                                if not moved:
-                                    ui.notify("Card não encontrado para mover", color="negative")
-                                    return
-
-                                # remover da coluna onde foi encontrado e adicionar na coluna destino
-                                try:
-                                    column_cards.get(found_col, []).remove(moved)
-                                except Exception:
-                                    pass
-                                column_cards.setdefault(dest, []).append(moved)
-
-                                # A operação de mover NÃO deve realizar nenhuma escrita no banco.
-                                # Registrar a movimentação apenas em memória no objeto do card.
-                                try:
-                                    now_str = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
-                                    user_name = sanitize_text(logged_user.get('NomeUsuario') or '')
-                                    obs_text = f"Movido em {now_str} — De: {found_col} para: {dest} — Usuário: {user_name}"
-                                    moved['_last_move'] = obs_text
-                                except Exception:
-                                    pass
-                                ui.notify(f'✔ "{moved.get("NomeCliente")}" movido para "{dest}"')
-
-                                render_board()
-
-                            # habilitar mover apenas para usuários autorizados
-                            _allowed_movers = {"Alex", "Angelo.Gabriel", "Marco.Aurelio", "Vinicius.Souza"}
-                            _current_user = sanitize_text(logged_user.get('NomeUsuario') or '')
-                            if _current_user in _allowed_movers:
-                                btn_move = ui.button("Mover", on_click=do_move).classes("bg-purple-600 text-white").style("background:#7c3aed !important;color:#ffffff !important;")
-                            else:
-                                btn_move = ui.button("Mover", on_click=do_move).classes("bg-purple-600 text-white").props('disabled').style("background:#7c3aed !important;color:#ffffff !important;")
-                                try:
-                                    ui.tooltip(btn_move, "Mover cards somente habilitado para usuários autorizados")
-                                except Exception:
-                                    pass
+                            # mover (desativado)
+                            # O código de moção foi comentado conforme solicitado. Mantemos um
+                            # placeholder informativo no UI para indicar que a funcionalidade
+                            # está desativada.
+                            #
+                            # Código original (seleção de coluna e botão 'Mover'):
+                            # options = [name for (name, _, _) in COLUMNS]
+                            # sel = ui.select(options, value=col_name).classes("w-full")
+                            # def do_move(...):
+                            #     ...
+                            # btn_move = ui.button("Mover", on_click=do_move)
+                            #
+                            # Em vez disso, exibir label informativa.
+                            #ui.label("Movimentação desativada").classes('text-sm text-gray-500')
 
     def show_history_dialog(num_atendimento):
         hist = fetch_history(num_atendimento)
