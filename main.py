@@ -742,6 +742,28 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
         try:
             # fallback: injetar <title> no head via ui.html (não sanitizando porque APP_NAME já foi sanitizado)
             ui.html(f"<title>{sanitize_text(APP_NAME)}</title>", sanitize=False)
+            # CSS global para reduzir espaçamento vertical entre linhas e elementos
+            ui.html('''
+                <style>
+                    /* reduzir line-height geral e margens verticais para compactar linhas */
+                    html, body, * {
+                        line-height: 1.15 !important;
+                    }
+                    /* reduzir margens padrão aplicadas por classes utilitárias */
+                    p, li, label, span, div, .text-sm, .text-xs {
+                        margin-top: 0 !important;
+                        margin-bottom: 0.125rem !important;
+                    }
+                    /* ajustar utilitários mais comuns */
+                    .mb-2 { margin-bottom: 0.25rem !important; }
+                    .mb-1 { margin-bottom: 0.125rem !important; }
+                    .mb-0 { margin-bottom: 0 !important; }
+                    .mt-2 { margin-top: 0.25rem !important; }
+                    .mt-1 { margin-top: 0.125rem !important; }
+                    /* reduzir espaçamento interno dos cards para ficar mais compacto */
+                    .card, .nicegui-card, .ui-card { padding-top: 0.25rem !important; padding-bottom: 0.25rem !important; }
+                </style>
+            ''', sanitize=False)
         except Exception:
             pass
     # garantir que o título seja definido no client-side (override do NiceGUI) — usar script para forçar
@@ -1575,7 +1597,8 @@ def show_kanban():
                         texto = limpar_rtf(texto_raw)
                         snippet = (texto[:250] + "...") if len(texto) > 250 else texto
                         snippet = sanitize_text(snippet)
-                        ui.label(f"Última interação: {ultima}").classes("text-xs text-gray-500 mb-1")
+                        # aumentar tamanho da fonte para ficar igual ao texto do snippet/descrição
+                        ui.label(f"Última interação: {ultima}").classes("text-sm text-gray-700 mb-1")
                         if snippet:
                             ui.label(snippet).classes("text-sm text-gray-700 mb-2")
 
@@ -1584,7 +1607,8 @@ def show_kanban():
                         if move_note:
                             ui.label(move_note).classes('text-sm text-gray-600 mb-1').style('font-style:italic;')
 
-                        with ui.row().classes("items-center gap-2"):
+                        # agrupar analista e botões verticalmente para que os botões fiquem abaixo do nome
+                        with ui.column().classes("items-start gap-2"):
                             latest = fetch_latest_iteration(num)
                             analyst = sanitize_text((latest.get("NomeUsuario") if latest else None) or "-")
                             ui.label(f"Analista: {analyst}").classes("text-sm text-gray-600")
