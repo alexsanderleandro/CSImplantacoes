@@ -267,6 +267,7 @@ SELECT
     A.RegInclusao AS Abertura,
     A.DataProxContato,
     A.CodCliente,
+    A.CodClassificacaoAtendimento,
     C.NomeCliente,
     A.Situacao,
     (
@@ -1013,6 +1014,8 @@ def show_kanban():
     column_cards = {name: [] for (name, _, _) in COLUMNS}
     start_col = COLUMNS[0][0]
     column_containers = {}
+    # armazenar os widgets de label de cabeçalho para podermos atualizar os totalizadores
+    header_labels = {}
 
     # construir mapa reverso: situacao_code -> column_name
     situ_to_column = {v['situacao']: k for k, v in COLUMN_MAP.items() if v.get('situacao') is not None}
@@ -1367,9 +1370,11 @@ def show_kanban():
             with board:
                 for col_name, bg_color, _ in COLUMNS:
                     with ui.column().classes("basis-0 flex-1").style("min-width: 12rem;"):
-                        ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(
+                        # criar label de cabeçalho e manter referência para atualização do total
+                        header_label = ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(
                             f"background:{bg_color};color:#ffffff !important;"
                         )
+                        header_labels[col_name] = header_label
                         cards_container = ui.column().classes("p-2")
                         column_containers[col_name] = cards_container
 
@@ -1379,6 +1384,14 @@ def show_kanban():
             if cards_container is None:
                 continue
             try:
+                # atualizar totalizador no cabeçalho antes de limpar/renderizar a coluna
+                try:
+                    cnt = len(column_cards.get(col_name, []) or [])
+                    header = header_labels.get(col_name)
+                    if header:
+                        header.set_text(f"{col_name} - {cnt}")
+                except Exception:
+                    pass
                 cards_container.clear()
             except Exception:
                 pass
