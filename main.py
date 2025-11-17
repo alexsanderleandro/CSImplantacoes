@@ -249,13 +249,13 @@ def normalize_description(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 COLUMNS = [
-    ("A iniciar", "#b7d1f8", 100),
+    ("A iniciar", "#7fb0f8", 100),
     ("Visita pré-implantação", "#a3a3a3", 101),
     ("Instalação do sistema", "#af95fa", 102),
-    ("Implantação em andamento", "#97c9b1", 103),
-    ("Implantação pausada", "#d3ca89", 104),
-    ("Implantação cancelada", "#f87171", 105),
-    ("Visita pós-implantação", "#B9AB6D", 106),
+    ("Implantação em andamento", "#769c8a", 103),
+    ("Implantação pausada", "#948f67", 104),
+    ("Implantação cancelada", "#8A5454", 105),
+    ("Visita pós-implantação", "#4F75C9", 106),
 ]
 COLUMN_MAP = {name: {"color": color, "situacao": situ} for (name, color, situ) in COLUMNS}
 
