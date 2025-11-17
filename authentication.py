@@ -14,10 +14,7 @@ def get_db_connection():
     Retorna uma conexão pyodbc usando Windows Authentication (Trusted Connection).
     O processo Python precisa executar com um usuário Windows que tenha acesso ao BD.
     """
-    # NOTE: Avoid forcing `charset` here — the ODBC driver handles wide strings
-    # (NVARCHAR) and forcing an encoding may break some queries (observed: exact
-    # equality on accented strings returned no rows). Use the default connection
-    # behavior and rely on pyodbc's decoding defaults.
+
     conn_str = ("DRIVER={%s};" "SERVER=%s;" "DATABASE=%s;" "Trusted_Connection=yes;") % (
         ODBC_DRIVER,
         DB_SERVER,
@@ -35,9 +32,6 @@ def get_db_connection():
     # Configurações adicionais para garantir o encoding correto
     conn = pyodbc.connect(conn_str, autocommit=False)
 
-    # Do not override the driver's default decoding for wide (NVARCHAR) types
-    # as that can interfere with equality comparisons on accentuated strings.
-    # Keep defaults which are known to work with the SQL Server ODBC driver.
 
     return conn
 
@@ -49,62 +43,46 @@ def verify_user(username: str, password: str) -> dict:
     ou None se falhar.
     """
     print(f"Tentando autenticar usuário: {username}")
-    sql = """
-    SELECT CodUsuario, NomeUsuario, nsenha
-    FROM Usuarios WITH (NOLOCK)
-    WHERE NomeUsuario = ?
-    """
     try:
         print(f"Conectando ao banco de dados: {DB_SERVER}.{DB_NAME}")
         conn = get_db_connection()
         cur = conn.cursor()
-        print(f"Executando consulta para usuário: {username}")
-        cur.execute(sql, (username,))
-        row = cur.fetchone()
 
-        if not row:
-            print(f"Usuário não encontrado: {username}")
-            return None
-
-        print(f"Dados do usuário encontrado: {row}")
-        print(f"Senha fornecida: {password}")
-
-        # Obtém o hash da senha armazenado (varbinary)
-        stored_hash = row[2]  # Já está no formato varbinary
-
-        if not stored_hash:
-            print("Erro: Nenhum hash de senha encontrado para o usuário")
-            return None
-
+        # Chama a stored procedure que valida usuário/senha no banco (retorna 1 se válido)
         try:
-            # Converte o nome do usuário para string segura
-            nome_usuario = str(row[1]) if row[1] is not None else ""
-
-            # Remove caracteres não-UTF-8
-            nome_usuario = nome_usuario.encode("utf-8", errors="ignore").decode("utf-8")
-
-            # Verificação de hash (substitua pela sua lógica real)
-            if (
-                stored_hash
-                == (
-                    b"\x02\x00\x0b\xae\x28\x9d\x0f\x7f\x21\x66\xb8\xff\x34\x38\xbe\x2e"
-                    b"\xd4\xf1\x4d\x0f\xc6\x2f\xcb\x95\xc9\xa8\xf6\x70\x32\xa0\xd0\xfc\x36\x39\x19"
-                    b"\x7b\x6e\xfe\x82\x4f\x4f\xdf\x20\x34\x01\x94\x41\x69\x13\xcc\xe7\x89\x21\xff\x77"
-                    b"\x97\xb1\x5d\xad\x70\x50\xe2\x80\x7b\x64\x3a\xcb\xe0\xbc\x94"
-                )
-            ):
-                user_data = {"CodUsuario": int(row[0]) if row[0] is not None else 0, "NomeUsuario": nome_usuario}
-                print(f"Autenticação bem-sucedida para: {user_data}")
-                return user_data
-            else:
-                print("Senha incorreta ou método de hash não suportado")
-                return None
-
+            print(f"Executando stored procedure csspValidaSenha para: {username}")
+            cur.execute("EXEC dbo.csspValidaSenha ?, ?", username, password)
+            res = cur.fetchone()
         except Exception as e:
-            print(f"Erro ao processar dados do usuário: {str(e)}")
-            import traceback
+            print(f"Erro ao executar csspValidaSenha: {e}")
+            res = None
 
-            traceback.print_exc()
+        if not res or not (isinstance(res, (list, tuple)) and len(res) > 0 and res[0] != 1 and res[0] != True):
+            # res[0] == 1 or True indicates valid; handle truthy cases
+            pass
+
+        # Interpret result: consider success when res and res[0] == 1 or res[0] is True
+        success = bool(res and (res[0] == 1 or res[0] is True))
+
+        if not success:
+            print("Usuário ou senha inválidos (csspValidaSenha)")
+            return None
+
+        # Se válido, buscar informações do usuário
+        try:
+            cur.execute("SELECT CodUsuario, NomeUsuario FROM Usuarios WITH (NOLOCK) WHERE NomeUsuario = ?", (username,))
+            row = cur.fetchone()
+            if not row:
+                print(f"Usuário válido mas registro ausente em Usuarios: {username}")
+                return {"CodUsuario": 0, "NomeUsuario": username}
+
+            nome_usuario = str(row[1]) if row[1] is not None else ""
+            nome_usuario = nome_usuario.encode("utf-8", errors="ignore").decode("utf-8")
+            user_data = {"CodUsuario": int(row[0]) if row[0] is not None else 0, "NomeUsuario": nome_usuario}
+            print(f"Autenticação bem-sucedida para: {user_data}")
+            return user_data
+        except Exception as e:
+            print(f"Erro ao buscar dados do usuário após validação: {e}")
             return None
 
     except Exception as e:
