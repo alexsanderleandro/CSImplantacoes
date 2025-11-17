@@ -1077,8 +1077,27 @@ def show_kanban():
                     new_cards = fetch_kanban_cards()
                     # construir mapeamento novo por coluna (por enquanto todas vão para start_col como antes)
                     new_column_cards = {name: [] for (name, _, _) in COLUMNS}
+                    # mapa de classificação -> coluna conforme regra solicitada
+                    classification_to_column = {
+                        7: "A iniciar",
+                        46: "Visita pré-implantação",
+                        29: "Instalação do sistema",
+                        47: "Implantação em andamento",
+                        48: "Implantação pausada",
+                        49: "Implantação cancelada",
+                        8: "Visita pós-implantação",
+                    }
                     for r in new_cards:
-                        new_column_cards[start_col].append(r)
+                        try:
+                            code = r.get('CodClassificacaoAtendimento')
+                            try:
+                                code_int = int(code) if code is not None else None
+                            except Exception:
+                                code_int = None
+                            col = classification_to_column.get(code_int, start_col)
+                        except Exception:
+                            col = start_col
+                        new_column_cards.setdefault(col, []).append(r)
 
                     # calcular diffs por coluna (compare por NumAtendimento)
                     changed_cols = []
@@ -1310,9 +1329,28 @@ def show_kanban():
     # board responsivo: permite overflow-x em telas pequenas e distribui colunas em telas maiores
     with root:
         board = ui.row().classes("w-full gap-4 items-start").style("overflow-x: auto;")
-    # Colocar todos os cards inicialmente na coluna "A iniciar"
+    # Colocar os cards inicialmente nas colunas de acordo com CodClassificacaoAtendimento
     for row in cards_data:
-        column_cards[start_col].append(row)
+        try:
+            code = row.get('CodClassificacaoAtendimento')
+            try:
+                code_int = int(code) if code is not None else None
+            except Exception:
+                code_int = None
+            # mapa de classificação -> coluna conforme regra solicitada
+            classification_to_column = {
+                7: "A iniciar",
+                46: "Visita pré-implantação",
+                29: "Instalação do sistema",
+                47: "Implantação em andamento",
+                48: "Implantação pausada",
+                49: "Implantação cancelada",
+                8: "Visita pós-implantação",
+            }
+            dest = classification_to_column.get(code_int, start_col)
+        except Exception:
+            dest = start_col
+        column_cards.setdefault(dest, []).append(row)
 
     def render_board(cols_to_update=None):
         """Renderiza colunas. Se cols_to_update for None, renderiza todas; caso contrário
