@@ -254,7 +254,7 @@ COLUMNS = [
     ("Instalação do sistema", "#af95fa", 102),
     ("Implantação em andamento", "#769c8a", 103),
     ("Implantação pausada", "#948f67", 104),
-    ("Implantação cancelada", "#8A5454", 105),
+    ("Implantação cancelada", "#D6C845", 105),
     ("Visita pós-implantação", "#4F75C9", 106),
 ]
 COLUMN_MAP = {name: {"color": color, "situacao": situ} for (name, color, situ) in COLUMNS}
@@ -1672,8 +1672,15 @@ def show_kanban():
                                                                 f"**Abertura:** {data_str}\n\n"
                                                                 f"**Descrição:** {desc}"
                                                             )
-                                                            with ui.card().classes("mb-2 p-3 w-full"):
-                                                                ui.markdown(md)
+                                                            # card RDM: aplicar estilos para forçar quebra de linha e evitar overflow
+                                                            # (longas URLs ou strings sem espaços podem vazar do fundo branco)
+                                                            with ui.card().classes("mb-2 p-3 w-full").style(
+                                                                "background:#ffffff;color:#000000;"
+                                                            ):
+                                                                # garantir que o conteúdo quebre linhas e seja legível
+                                                                ui.markdown(md).style(
+                                                                    "white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; max-width:100%;"
+                                                                )
                                     with ui.row().classes("w-full mt-4 justify-center"):
                                         ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes("primary")
                                 dlg.open()
