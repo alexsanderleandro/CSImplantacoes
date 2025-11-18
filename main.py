@@ -2035,16 +2035,14 @@ def show_kanban():
 # dentro do guard "if __name__ == '__main__'" para evitar que o
 # servidor NiceGUI seja iniciado quando este módulo for importado
 # por testes ou outras ferramentas.
+# ---------- Execução ----------
+
 if __name__ in {"__main__", "__mp_main__"}:
-    # limpar cache de imagens expiradas antes de iniciar a UI
     clean_cache()
 
-    # Em modo normal, inicializamos a UI via start_app().
-    # Se AUTO_KANBAN=1 queremos pular o login e abrir direto o Kanban (útil para debug).
     auto = os.getenv("AUTO_KANBAN") == "1"
     if auto:
         logged_user.update({"CodUsuario": 0, "NomeUsuario": "dev"})
 
-    # start_app fará start_periodic_cache_clean internamente
-    # porta e host permanecem como antes
-    start_app(host=os.getenv("APP_HOST", "0.0.0.0"), port=int(os.getenv("APP_PORT", "8888")))
+    start_app(host=os.getenv("APP_HOST", "0.0.0.0"),
+              port=int(os.getenv("APP_PORT", "8888")))
