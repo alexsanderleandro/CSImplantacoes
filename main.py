@@ -327,9 +327,10 @@ INNER JOIN AtendimentoIteracao I WITH (NOLOCK)
     ON I.NumAtendimento = A.NumAtendimento
     AND I.Desdobramento = A.Desdobramento   
 WHERE
-    A.AssuntoAtendimento = N'Implantação'
-    AND A.Situacao = 1                     
-    AND A.Desdobramento = 0                 
+    A.AssuntoAtendimento = N'Implantação' 
+	AND A.CodClassificacaoAtendimento=50
+    --AND A.Situacao = 1                     
+    AND A.Desdobramento = 0     
 GROUP BY
     A.NumAtendimento,
     A.AssuntoAtendimento,
