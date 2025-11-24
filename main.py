@@ -1055,17 +1055,19 @@ def show_kanban():
                 # mostrar o nome do APP em negrito, mantendo o label 'Usuário' e o nome em fonte normal
                 try:
                     safe_app = sanitize_text(APP_NAME)
+                    safe_version = sanitize_text(APP_VERSION)
                     safe_user = sanitize_text(logged_user.get('NomeUsuario', ''))
                     header_html = (
                         f"<div class='text-2xl'>"
-                        f"🗂️ <span class='font-semibold'>{safe_app}</span> — "
+                        f"🗂️ <span class='font-semibold'>{safe_app}</span> "
+                        f"<span class='text-sm text-gray-600'>v{safe_version}</span> — "
                         f"<span class='font-normal'>Usuário: {safe_user}</span>"
                         f"</div>"
                     )
                     ui.html(header_html, sanitize=False)
                 except Exception:
                     # fallback simples caso algo dê errado
-                    ui.label(f"🗂️ {sanitize_text(APP_NAME)} — Usuário: {sanitize_text(logged_user.get('NomeUsuario', ''))}").classes("text-2xl")
+                    ui.label(f"🗂️ {sanitize_text(APP_NAME)} | {APP_VERSION} — Usuário: {sanitize_text(logged_user.get('NomeUsuario', ''))}").classes("text-2xl")
                 ui.label(f"{len(cards_data)} cards carregados").classes("text-sm text-gray-500")
 
             # botão de logout posicionado à direita do cabeçalho
