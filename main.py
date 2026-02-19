@@ -294,7 +294,7 @@ WHERE
     A.AssuntoAtendimento = N'Implantação'
     AND A.Situacao = 0
     AND A.CodClassificacaoAtendimento <> 50
-    AND A.Desdobramento = 0  
+    --AND A.Desdobramento = 0  
 ORDER BY
     C.NomeCliente;
 
