@@ -263,6 +263,7 @@ COLUMN_MAP = {name: {"color": color, "situacao": situ} for (name, color, situ) i
 SQL_ATENDIMENTOS_IMPLANTACAO = """
 SELECT
     A.NumAtendimento,
+    A.Desdobramento,
     A.AssuntoAtendimento,
     A.RegInclusao AS Abertura,
     A.DataProxContato,
@@ -304,6 +305,7 @@ ORDER BY
 SQL_ATENDIMENTOS_IMPLANTACAO_FINALIZADA = """
 SELECT
     A.NumAtendimento,
+    A.Desdobramento,
     A.AssuntoAtendimento,
     A.RegInclusao AS Abertura,
     A.CodCliente,
@@ -390,39 +392,70 @@ def fetch_implantacoes_finalizadas():
             pass
 
 
-def fetch_history(num_atendimento):
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute(SQL_ATENDIMENTO_ITERACAO, (num_atendimento,))
-    cols = [c[0] for c in cur.description]
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return [dict(zip(cols, row)) for row in rows]
-
-
-def fetch_latest_iteration(num_atendimento):
-    """Retorna a última iteração (uma linha) com NomeUsuario e Data/Hora/Texto, ou None."""
-    conn = get_db_connection()
-    cur = conn.cursor()
-    sql = """
-    SELECT TOP 1 AI.NumIteracao, AI.DataIteracao, AI.HoraIteracao, AI.TextoIteracao, U.NomeUsuario
-    FROM AtendimentoIteracao AI WITH (NOLOCK)
-    LEFT JOIN Usuarios U WITH (NOLOCK) ON AI.CodUsuario = U.CodUsuario
-        WHERE AI.NumAtendimento = ?
-            AND AI.Desdobramento = 0
-    ORDER BY AI.NumIteracao DESC
+def fetch_history(num_atendimento, desdobramento=None):
+    """Busca iterações do atendimento. Se `desdobramento` for informado, filtra
+    apenas pelas iterações desse desdobramento.
     """
-    cur.execute(sql, (num_atendimento,))
-    row = cur.fetchone()
-    if not row:
-        cur.close()
-        conn.close()
-        return None
-    cols = [c[0] for c in cur.description]
-    cur.close()
-    conn.close()
-    return dict(zip(cols, row))
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        if desdobramento is None:
+            cur.execute(SQL_ATENDIMENTO_ITERACAO, (num_atendimento,))
+        else:
+            # filtrar por NumAtendimento e Desdobramento
+            sql = SQL_ATENDIMENTO_ITERACAO.replace(
+                "WHERE AI.NumAtendimento = ?",
+                "WHERE AI.NumAtendimento = ? AND AI.Desdobramento = ?",
+            )
+            cur.execute(sql, (num_atendimento, desdobramento))
+        cols = [c[0] for c in cur.description]
+        rows = cur.fetchall()
+        return [dict(zip(cols, row)) for row in rows]
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
+
+
+def fetch_latest_iteration(num_atendimento, desdobramento=None):
+    """Retorna a última iteração (uma linha) com NomeUsuario e Data/Hora/Texto, ou None.
+
+    Se `desdobramento` for informado, filtra apenas as iterações daquele desdobramento.
+    """
+    conn = get_db_connection()
+    cur = conn.cursor()
+    try:
+        if desdobramento is None:
+            sql = """
+            SELECT TOP 1 AI.NumIteracao, AI.DataIteracao, AI.HoraIteracao, AI.TextoIteracao, U.NomeUsuario
+            FROM AtendimentoIteracao AI WITH (NOLOCK)
+            LEFT JOIN Usuarios U WITH (NOLOCK) ON AI.CodUsuario = U.CodUsuario
+            WHERE AI.NumAtendimento = ?
+            ORDER BY AI.NumIteracao DESC
+            """
+            cur.execute(sql, (num_atendimento,))
+        else:
+            sql = """
+            SELECT TOP 1 AI.NumIteracao, AI.DataIteracao, AI.HoraIteracao, AI.TextoIteracao, U.NomeUsuario
+            FROM AtendimentoIteracao AI WITH (NOLOCK)
+            LEFT JOIN Usuarios U WITH (NOLOCK) ON AI.CodUsuario = U.CodUsuario
+            WHERE AI.NumAtendimento = ? AND AI.Desdobramento = ?
+            ORDER BY AI.NumIteracao DESC
+            """
+            cur.execute(sql, (num_atendimento, desdobramento))
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = [c[0] for c in cur.description]
+        return dict(zip(cols, row))
+    finally:
+        try:
+            cur.close()
+            conn.close()
+        except Exception:
+            pass
 
 
 def fetch_rdms(num_atendimento):
@@ -1376,10 +1409,16 @@ def show_kanban():
                 49: "Implantação cancelada",
                 8: "Visita pós-implantação",
             }
-            dest = classification_to_column.get(code_int, start_col)
+            # somente incluir cards que possuam uma classificação conhecida/mapeada
+            if code_int in classification_to_column:
+                dest = classification_to_column[code_int]
+                column_cards.setdefault(dest, []).append(row)
+            else:
+                # pular atendimentos sem classificação vinculada ao dashboard
+                continue
         except Exception:
-            dest = start_col
-        column_cards.setdefault(dest, []).append(row)
+            # em caso de erro, pular este registro
+            continue
 
     def render_board(cols_to_update=None):
         """Renderiza colunas. Se cols_to_update for None, renderiza todas; caso contrário
@@ -1613,10 +1652,15 @@ def show_kanban():
 
                         # agrupar analista e botões verticalmente para que os botões fiquem abaixo do nome
                         with ui.column().classes("items-start gap-2"):
-                            latest = fetch_latest_iteration(num)
+                            desdob_val = card.get('Desdobramento')
+                            latest = fetch_latest_iteration(num, desdob_val)
                             analyst = sanitize_text((latest.get("NomeUsuario") if latest else None) or "-")
                             ui.label(f"Analista: {analyst}").classes("text-sm text-gray-600")
-                            ui.button("Histórico", on_click=lambda _, n=num: show_history_dialog(n)).classes("primary")
+                            desdob_val = card.get('Desdobramento')
+                            ui.button(
+                                "Histórico",
+                                on_click=lambda _, n=num, d=desdob_val: show_history_dialog(n, d),
+                            ).classes("primary")
 
                             # RDMs dialog
                             def _show_rdms_local(_, n=num):
@@ -1828,8 +1872,8 @@ def show_kanban():
                             # Em vez disso, exibir label informativa.
                             #ui.label("Movimentação desativada").classes('text-sm text-gray-500')
 
-    def show_history_dialog(num_atendimento):
-        hist = fetch_history(num_atendimento)
+    def show_history_dialog(num_atendimento, desdobramento=None):
+        hist = fetch_history(num_atendimento, desdobramento)
 
         # ordenar por DataIteracao asc e HoraIteracao asc quando possível
         def _make_dt(h):
@@ -1866,7 +1910,8 @@ def show_kanban():
                 return datetime.min
 
         try:
-            hist_sorted = sorted(hist, key=_make_dt)
+            # ordenar por DataIteracao/HoraIteracao em ordem decrescente (mais recentes primeiro)
+            hist_sorted = sorted(hist, key=_make_dt, reverse=True)
         except Exception:
             hist_sorted = hist
 
