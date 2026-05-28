@@ -320,22 +320,23 @@ SELECT
           AND I2.Desdobramento = 0
         ORDER BY I2.NumIteracao DESC
     ) AS TextoIteracao
-FROM CNSAtendimento A -- sem NOLOCK aqui
+FROM CNSAtendimento A WITH (NOLOCK)
 INNER JOIN CnsClientes C WITH (NOLOCK)
     ON A.CodCliente = C.CodCliente
     AND A.CodEmpresa = C.CodEmpresa
 INNER JOIN Usuarios U WITH (NOLOCK)
     ON A.CodUsuario = U.CodUsuario
-INNER JOIN AtendimentoIteracao I WITH (NOLOCK)
+LEFT JOIN AtendimentoIteracao I WITH (NOLOCK)
     ON I.NumAtendimento = A.NumAtendimento
-    AND I.Desdobramento = A.Desdobramento   
+    AND I.Desdobramento = A.Desdobramento
 WHERE
-    A.AssuntoAtendimento = N'Implantação' 
-	AND A.CodClassificacaoAtendimento=50
-    --AND A.Situacao = 1                     
-    AND A.Desdobramento = 0     
+    A.AssuntoAtendimento = N'Implantação'
+    AND A.Situacao = 1
+    AND A.CodClassificacaoAtendimento = 50
+    AND A.Desdobramento = 0
 GROUP BY
     A.NumAtendimento,
+    A.Desdobramento,
     A.AssuntoAtendimento,
     A.RegInclusao,
     A.CodCliente,
@@ -382,8 +383,11 @@ def fetch_implantacoes_finalizadas():
         cols = [c[0] for c in cur.description]
         rows = cur.fetchall()
         return [dict(zip(cols, row)) for row in rows]
-    except Exception:
-        return []
+    except Exception as _db_err:
+        import traceback
+        print(f"[fetch_implantacoes_finalizadas] ERRO: {_db_err}")
+        traceback.print_exc()
+        raise  # re-levanta para que o caller possa exibir ui.notify
     finally:
         try:
             cur.close()
@@ -1197,7 +1201,10 @@ def show_kanban():
                 try:
                     cards = fetch_implantacoes_finalizadas() or []
                 except Exception as e:
-                    # debug print removed
+                    try:
+                        ui.notify(f"Erro ao carregar implantações finalizadas: {e}", color="negative")
+                    except Exception:
+                        pass
                     cards = []
                 dlg = ui.dialog()
                 dlg.classes('w-full max-w-6xl')
@@ -1237,12 +1244,12 @@ def show_kanban():
 
                         # Cabeçalho do diálogo: título, select de filtro por ano, total e botão fechar
                         with ui.row().classes('items-center justify-between gap-4'):
-                            # título do diálogo em branco para contraste com o fundo
-                            ui.label('Implantações finalizadas').classes('text-2xl font-bold text-white')
+                            # título do diálogo
+                            ui.label('Implantações finalizadas').classes('text-2xl font-bold')
                             # controles: select e total centralizados verticalmente
                             with ui.column().classes('items-center gap-1'):
                                 # label customizado acima do select para controlar alinhamento
-                                ui.label('Filtrar por ano').classes('text-sm text-white').style('display:block;text-align:center;margin-bottom:4px;')
+                                ui.label('Filtrar por ano').classes('text-sm').style('display:block;text-align:center;margin-bottom:4px;')
                                 # select nativo (oculto) usado como fonte de verdade para o valor;
                                 # criaremos um dropdown customizado em HTML para permitir centralizar as opções
                                 year_select = ui.select(
@@ -1263,7 +1270,7 @@ def show_kanban():
                                 except Exception:
                                     pass
                                 # total abaixo do select (texto escuro e centralizado)
-                                total_label = ui.label('Total: 0').classes('text-sm text-white').style('display:block;text-align:center;')
+                                total_label = ui.label('Total: 0').classes('text-sm').style('display:block;text-align:center;')
                             ui.button('Fechar [ESC]', on_click=lambda _=None: dlg.close()).classes('primary')
 
                         # gráfico removido conforme solicitação; não será injetado no diálogo
