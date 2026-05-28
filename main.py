@@ -1198,198 +1198,221 @@ def show_kanban():
 
             ui.button("Atualizar cards", on_click=_do_refresh).classes("bg-green-600 text-white").style("background:#10b981 !important;color:#ffffff !important;")
             def _open_implantacoes_dialog(_=None):
+                # ── helper de parsing de data ──────────────────────────────
+                def _to_dt(v):
+                    if v is None:
+                        return None
+                    if isinstance(v, datetime):
+                        return v
+                    s = str(v)
+                    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S",
+                                "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                        try:
+                            return datetime.strptime(s, fmt)
+                        except Exception:
+                            continue
+                    return None
+
+                # ── buscar registros ───────────────────────────────────────
                 try:
                     cards = fetch_implantacoes_finalizadas() or []
                 except Exception as e:
-                    try:
-                        ui.notify(f"Erro ao carregar implantações finalizadas: {e}", color="negative")
-                    except Exception:
-                        pass
+                    ui.notify(f"Erro ao carregar implantações finalizadas: {e}", color="negative")
                     cards = []
+
+                # ── pré-processar: calcular duração uma vez só ─────────────
+                years = set()
+                processed = []
+                for c in cards:
+                    abertura  = _to_dt(c.get('Abertura'))
+                    ultima_dt = _to_dt(c.get('UltimaIteracao'))
+                    dur = max(0, (ultima_dt - abertura).days) if (abertura and ultima_dt) else None
+                    if ultima_dt:
+                        years.add(ultima_dt.year)
+                    processed.append((c, abertura, ultima_dt, dur))
+
+                years_list = sorted(years, reverse=True)
+                year_opts  = ["Todos"] + [str(y) for y in years_list]
+                sort_opts  = [
+                    "Cliente A → Z",
+                    "Cliente Z → A",
+                    "Dias: menor → maior",
+                    "Dias: maior → menor",
+                ]
+
+                # ── diálogo maximizado ─────────────────────────────────────
                 dlg = ui.dialog()
-                dlg.classes('w-full max-w-6xl')
+                dlg.props('maximized')
+
                 with dlg:
-                    # cabeçalho do diálogo: título, filtro por ano e botão fechar
-                    # header será construído após coletar os anos disponíveis para o select
+                    with ui.card().classes('w-full h-full').style('border-radius:0;padding:0;margin:0;'):
 
-                        # preparar filtro por ano (baseado na data de abertura)
-                        def _to_dt(v):
-                            if v is None:
-                                return None
-                            if isinstance(v, datetime):
-                                return v
-                            s = str(v)
-                            for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
-                                try:
-                                    return datetime.strptime(s, fmt)
-                                except Exception:
-                                    continue
-                            return None
+                        ui.html("""<style>
+                          .fin-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(310px,1fr));gap:14px;padding:16px;}
+                          .fin-card{border-radius:8px;border:1px solid #e2e8f0;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.07);overflow:hidden;}
+                          .fin-card-head{background:linear-gradient(90deg,#1e3a5f,#2563eb);padding:10px 14px;}
+                          .fin-badge{display:inline-block;border-radius:20px;padding:2px 10px;font-size:.72rem;font-weight:600;}
+                          .fin-bar-bg{background:#e2e8f0;border-radius:4px;height:6px;overflow:hidden;margin-top:8px;}
+                          .fin-bar-ok{height:6px;border-radius:4px;background:linear-gradient(90deg,#22c55e,#16a34a);}
+                          .fin-bar-slow{height:6px;border-radius:4px;background:linear-gradient(90deg,#f97316,#dc2626);}
+                        </style>""", sanitize=False)
 
-                        years = set()
-                        processed = []
-                        for c in cards:
-                            abertura = _to_dt(c.get('Abertura'))
-                            # usar o ano da data de conclusão (UltimaIteracao) para o filtro
-                            ultima_dt = _to_dt(c.get('UltimaIteracao'))
-                            if ultima_dt:
-                                years.add(ultima_dt.year)
-                            processed.append((c, abertura))
+                        # ── cabeçalho ──────────────────────────────────────
+                        with ui.row().classes('items-center justify-between w-full px-4 py-3 flex-wrap gap-2').style(
+                            'background:linear-gradient(135deg,#1e3a5f,#0f2440);flex-shrink:0;'
+                        ):
+                            with ui.row().classes('items-center gap-2'):
+                                ui.label('🏁').style('font-size:1.5rem;')
+                                with ui.column().classes('gap-0'):
+                                    ui.label('Implantações Concluídas').classes('text-xl font-bold text-white')
+                                    ui.label('Histórico de projetos finalizados').classes('text-xs').style('color:#93c5fd;')
+                            with ui.row().classes('items-center gap-3 flex-wrap'):
+                                total_label = ui.label('').classes('text-sm font-semibold text-white')
+                                ui.button('✕ Fechar', on_click=lambda _=None: dlg.close()).classes(
+                                    'font-semibold text-sm'
+                                ).style('background:rgba(255,255,255,.18);color:#fff;border:1px solid rgba(255,255,255,.35);border-radius:6px;padding:4px 14px;')
 
-
-                        # ordenar anos em ordem decrescente para mostrar o mais recente primeiro
-                        years_list = sorted(years, reverse=True)
-                        # incluir opção 'Todos' para mostrar todo o período quando nada for selecionado
-                        options = ["Todos"] + [str(y) for y in years_list]
-
-                        # Cabeçalho do diálogo: título, select de filtro por ano, total e botão fechar
-                        with ui.row().classes('items-center justify-between gap-4'):
-                            # título do diálogo
-                            ui.label('Implantações finalizadas').classes('text-2xl font-bold')
-                            # controles: select e total centralizados verticalmente
-                            with ui.column().classes('items-center gap-1'):
-                                # label customizado acima do select para controlar alinhamento
-                                ui.label('Filtrar por ano').classes('text-sm').style('display:block;text-align:center;margin-bottom:4px;')
-                                # select nativo (oculto) usado como fonte de verdade para o valor;
-                                # criaremos um dropdown customizado em HTML para permitir centralizar as opções
-                                year_select = ui.select(
-                                    options,
-                                    value="Todos",
-                                    on_change=lambda _=None: render_cards(),
-                                ).classes('w-48').props('id="year_filter_select"').style('display:none;')
-
-                                # tornar o select nativo visível/acesível e injetar CSS simples
-                                try:
-                                    # remover display:none para garantir acessibilidade
-                                    year_select.style('display:block;text-align:center;')
-                                    # adicionar CSS para centralizar o texto do select
-                                    ui.html(
-                                        '<style>#year_filter_select { text-align:center; appearance:none; -moz-appearance:none; -webkit-appearance:none; text-align-last:center; -moz-text-align-last:center; } #year_filter_select option { text-align:center; }</style>',
-                                        sanitize=False,
-                                    )
-                                except Exception:
-                                    pass
-                                # total abaixo do select (texto escuro e centralizado)
-                                total_label = ui.label('Total: 0').classes('text-sm').style('display:block;text-align:center;')
-                            ui.button('Fechar [ESC]', on_click=lambda _=None: dlg.close()).classes('primary')
-
-                        # gráfico removido conforme solicitação; não será injetado no diálogo
-
-                        # injetar CSS local para centralizar o label e as opções do select
-                        try:
-                            ui.html(
-                                '<style>#year_filter_select, #year_filter_select option { text-align:center; } label[for="year_filter_select"] { display:block; text-align:center; }</style>',
-                                sanitize=False,
-                            )
-                        except Exception:
-                            pass
-
-                        # container onde os cards serão renderizados dinamicamente
-                        cards_container = ui.column().classes('w-full')
-
-                        def render_cards():
-                            # ler seleção e filtrar
-                            sel = year_select.value
-                            # interpretar 'Todos' ou valor vazio como sem filtro (None)
-                            try:
-                                yf = int(sel) if sel and sel != "Todos" else None
-                            except Exception:
-                                yf = None
-                            try:
-                                cards_container.clear()
-                            except Exception:
-                                pass
-
-                            # construir lista filtrada (filtrando pelo ano de conclusão),
-                            # ordenar por ÚltimaIteracao (desc) e atualizar total
-                            to_show = []
-                            for c, abertura in processed:
-                                ultima_dt = _to_dt((c or {}).get('UltimaIteracao'))
-                                if yf and (not ultima_dt or ultima_dt.year != yf):
-                                    continue
-                                to_show.append((c, abertura, ultima_dt))
-                            try:
-                                # ordenar por UltimaIteracao (já extraído em posição 2 da tupla)
-                                to_show.sort(
-                                    key=lambda tup: (tup[2] or datetime.min),
-                                    reverse=True,
+                        # ── barra de filtros/ordenação ──────────────────────
+                        with ui.row().classes('items-end gap-3 px-4 py-3 flex-wrap').style(
+                            'background:#f1f5f9;border-bottom:1px solid #e2e8f0;flex-shrink:0;'
+                        ):
+                            with ui.column().classes('gap-0'):
+                                ui.label('🔍 Buscar cliente').classes('text-xs text-gray-500 font-medium')
+                                search_input = ui.input(placeholder='Digite parte do nome…').classes('w-56').style(
+                                    'background:#fff;border-radius:6px;'
                                 )
-                            except Exception:
-                                pass
+                            with ui.column().classes('gap-0'):
+                                ui.label('📅 Filtrar por ano').classes('text-xs text-gray-500 font-medium')
+                                year_select = ui.select(year_opts, value="Todos").classes('w-32').style(
+                                    'background:#fff;border-radius:6px;'
+                                )
+                            with ui.column().classes('gap-0'):
+                                ui.label('↕ Ordenar por').classes('text-xs text-gray-500 font-medium')
+                                sort_select = ui.select(sort_opts, value=sort_opts[0]).classes('w-48').style(
+                                    'background:#fff;border-radius:6px;'
+                                )
+                            ui.button('Aplicar', on_click=lambda _=None: _render()).classes(
+                                'font-semibold text-sm text-white'
+                            ).style('background:#2563eb;border-radius:6px;padding:6px 18px;align-self:flex-end;')
+
+                        # ── faixa de estatísticas ──────────────────────────
+                        stats_bar = ui.row().classes('items-center gap-3 px-4 py-2 flex-wrap').style(
+                            'background:#fff;border-bottom:1px solid #e2e8f0;flex-shrink:0;'
+                        )
+
+                        # ── área de scroll ─────────────────────────────────
+                        with ui.scroll_area().classes('w-full').style('flex:1;min-height:0;'):
+                            cards_col = ui.column().classes('w-full').style('gap:0;padding:0;')
+
+                        # ── render ─────────────────────────────────────────
+                        def _render():
+                            # ler controles
+                            yf = None
                             try:
-                                total_label.set_text(f"Total: {len(to_show)}")
+                                yv = year_select.value
+                                yf = int(yv) if yv and yv != "Todos" else None
                             except Exception:
                                 pass
+                            search_term = (search_input.value or '').strip().lower()
+                            sort_val    = sort_select.value
 
-
-                            # calcular média de dias por implantação no período filtrado
-                            sum_days = 0
-                            count_days = 0
-                            for c, abertura, ultima in to_show:
-                                try:
-                                    if abertura and ultima:
-                                        sum_days += max(0, (ultima - abertura).days)
-                                        count_days += 1
-                                except Exception:
+                            # filtrar
+                            to_show = []
+                            for c, ab, ul, dur in processed:
+                                if yf and (not ul or ul.year != yf):
                                     continue
+                                nome_raw = sanitize_text(c.get('NomeCliente') or '')
+                                if search_term and search_term not in nome_raw.lower():
+                                    continue
+                                to_show.append((c, ab, ul, dur))
 
-                            if count_days > 0:
-                                avg_days = round(sum_days / count_days)
-                                avg_text = f"Média de dias por implantação no período: {avg_days} dias"
-                            else:
-                                avg_text = "Média de dias por implantação no período: N/A"
+                            # ordenar
+                            if sort_val == "Cliente A → Z":
+                                to_show.sort(key=lambda t: sanitize_text(t[0].get('NomeCliente') or '').lower())
+                            elif sort_val == "Cliente Z → A":
+                                to_show.sort(key=lambda t: sanitize_text(t[0].get('NomeCliente') or '').lower(), reverse=True)
+                            elif sort_val == "Dias: menor → maior":
+                                to_show.sort(key=lambda t: (t[3] if t[3] is not None else 99999))
+                            elif sort_val == "Dias: maior → menor":
+                                to_show.sort(key=lambda t: (t[3] if t[3] is not None else -1), reverse=True)
 
-                            # exibir card com a média antes da lista de cards
-                            try:
-                                with cards_container:
-                                    # card com fundo vermelho escuro e texto branco
-                                    with ui.card().classes('mb-4 p-3 w-full').style('background:#7f1d1d;color:#ffffff;'):
-                                        ui.label(avg_text).classes('text-lg font-semibold text-white')
-                            except Exception:
-                                pass
+                            # estatísticas
+                            duracoes = [t[3] for t in to_show if t[3] is not None]
+                            total_v  = len(to_show)
+                            avg_d    = round(sum(duracoes) / len(duracoes)) if duracoes else None
+                            min_d    = min(duracoes) if duracoes else None
+                            max_d    = max(duracoes) if duracoes else None
+                            max_prop = max_d if max_d and max_d > 0 else 1
 
-                            for c, abertura, ultima in to_show:
-                                num = c.get('NumAtendimento')
-                                nome = sanitize_text(c.get('NomeCliente') or '-')
-                                abertura_str = abertura.strftime('%Y-%m-%d') if abertura else '-'
-                                ultima_str = ultima.strftime('%Y-%m-%d %H:%M:%S') if ultima else '-'
-                                periodo = ''
-                                try:
-                                    if abertura and ultima:
-                                        periodo = f"Período de implantação: {(ultima - abertura).days} dias"
-                                except Exception:
-                                    periodo = ''
-                                with cards_container:
-                                    with ui.card().classes('mb-2 p-3 w-full'):
-                                        # Cabeçalho: Nome do cliente seguido do período (se disponível)
-                                        # construir cabeçalho: nome + período (período em azul escuro)
-                                        try:
-                                            safe_nome = sanitize_text(nome)
-                                            safe_periodo = sanitize_text(periodo) if periodo else ""
-                                            if safe_periodo:
-                                                # usar !important para evitar que regras de estilo externas
-                                                # sobrescrevam a cor desejada do texto do período
-                                                # usar um azul mais visível (blue-800) para contraste com o fundo
-                                                header_html = (
-                                                    f"<div class='font-semibold'>{safe_nome} - "
-                                                    f"<span style=\"color:#1e40af !important;\">{safe_periodo}</span></div>"
-                                                )
-                                            else:
-                                                header_html = f"<div class='font-semibold'>{safe_nome}</div>"
-                                        except Exception:
-                                            header_html = f"<div class='font-semibold'>{sanitize_text(nome)}</div>"
-                                        with ui.row().classes('items-center justify-between'):
-                                            ui.html(header_html, sanitize=False)
-                                            ui.label(f"#{num}").classes('text-sm text-gray-600')
-                                        # Detalhes abaixo do cabeçalho
-                                        ui.label(f"Abertura: {abertura_str}").classes('text-xs text-gray-500')
-                                        ui.label(f"Conclusão: {ultima_str}").classes('text-xs text-gray-500')
-                                        # mostrar analista (NomeUsuario)
-                                        analista_lbl = sanitize_text(c.get('NomeUsuario') or '-')
-                                        ui.label(f"Analista responsável: {analista_lbl}").classes('text-sm text-gray-600')
+                            total_label.set_text(f"{total_v} registro{'s' if total_v != 1 else ''}")
 
-                        # renderizar inicialmente (sem filtro)
-                        render_cards()
+                            stats_bar.clear()
+                            with stats_bar:
+                                for icon, lbl, val, bg, fg in [
+                                    ('📋', 'Total',        str(total_v),                                 '#dbeafe', '#1e40af'),
+                                    ('📅', 'Média (dias)', f"{avg_d}d" if avg_d is not None else 'N/A', '#dcfce7', '#15803d'),
+                                    ('⚡', 'Mais rápido',  f"{min_d}d" if min_d is not None else 'N/A', '#fef9c3', '#854d0e'),
+                                    ('🐢', 'Mais longo',   f"{max_d}d" if max_d is not None else 'N/A', '#fee2e2', '#b91c1c'),
+                                ]:
+                                    with ui.card().classes('px-4 py-2 items-center').style(
+                                        f'background:{bg};border:none;box-shadow:none;border-radius:8px;min-width:110px;text-align:center;'
+                                    ):
+                                        ui.label(f"{icon} {lbl}").classes('text-xs font-medium').style(f'color:{fg};')
+                                        ui.label(val).classes('text-xl font-bold').style(f'color:{fg};')
+
+                            cards_col.clear()
+                            if not to_show:
+                                with cards_col:
+                                    ui.html(
+                                        '<div style="text-align:center;padding:60px 0;color:#94a3b8;width:100%;">'
+                                        '<div style="font-size:3rem;">📭</div>'
+                                        '<div style="font-size:1rem;margin-top:8px;">Nenhum registro encontrado</div>'
+                                        '</div>', sanitize=False)
+                                return
+
+                            html_cards = []
+                            for c, abertura, ultima, dur in to_show:
+                                num      = c.get('NumAtendimento')
+                                nome     = sanitize_text(c.get('NomeCliente') or '-')
+                                analista = sanitize_text(c.get('NomeUsuario') or '-')
+                                ab_str   = abertura.strftime('%d/%m/%Y') if abertura else '-'
+                                ul_str   = ultima.strftime('%d/%m/%Y')   if ultima   else '-'
+                                bar_pct  = round((dur / max_prop) * 100) if dur is not None else 0
+                                bar_cls  = 'fin-bar-slow' if (avg_d and dur and dur > avg_d) else 'fin-bar-ok'
+                                dur_lbl  = f"{dur} dias" if dur is not None else "N/A"
+                                b_bg = '#dcfce7' if (avg_d and dur is not None and dur <= avg_d) else '#fee2e2'
+                                b_fg = '#15803d' if (avg_d and dur is not None and dur <= avg_d) else '#b91c1c'
+                                html_cards.append(f"""
+                                <div class="fin-card">
+                                  <div class="fin-card-head">
+                                    <div style="font-weight:700;color:#fff;font-size:.95rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{nome}">{nome}</div>
+                                    <div style="font-size:.75rem;color:#bfdbfe;margin-top:2px;">Atend. #{num}</div>
+                                  </div>
+                                  <div style="padding:12px 14px;">
+                                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                                      <span style="font-size:.78rem;color:#64748b;">👤 {analista}</span>
+                                      <span class="fin-badge" style="background:{b_bg};color:{b_fg};">⏱ {dur_lbl}</span>
+                                    </div>
+                                    <div style="font-size:.75rem;color:#64748b;display:flex;gap:14px;margin-bottom:4px;">
+                                      <span>📅 <strong style="color:#1e293b;">{ab_str}</strong></span>
+                                      <span>✅ <strong style="color:#1e293b;">{ul_str}</strong></span>
+                                    </div>
+                                    <div class="fin-bar-bg"><div class="{bar_cls}" style="width:{bar_pct}%;"></div></div>
+                                  </div>
+                                </div>""")
+
+                            with cards_col:
+                                ui.html('<div class="fin-grid">' + ''.join(html_cards) + '</div>', sanitize=False)
+
+                        # pesquisa em tempo real ao digitar (Enter ou perda de foco)
+                        search_input.on('keydown.enter', lambda _=None: _render())
+                        search_input.on('blur', lambda _=None: _render())
+                        year_select.on('update:model-value', lambda _=None: _render())
+                        sort_select.on('update:model-value', lambda _=None: _render())
+
+                        # renderização inicial
+                        _render()
+
                 dlg.open()
 
             ui.button("Implantações finalizadas", on_click=_open_implantacoes_dialog).classes("bg-red-600 text-white").style("background:#ef4444 !important;color:#ffffff !important;")
