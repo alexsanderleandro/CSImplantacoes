@@ -293,7 +293,7 @@ INNER JOIN CnsClientes C WITH (NOLOCK)
 INNER JOIN Usuarios U WITH (NOLOCK)
     ON A.CodUsuario = U.CodUsuario
 WHERE
-    A.AssuntoAtendimento = N'Implantação'
+    A.CodClassificacaoAtendimento IN (7, 46, 29, 47, 51, 48, 49, 8)
     AND A.Situacao = 0
     --AND A.Desdobramento = 0  
 ORDER BY
@@ -330,10 +330,8 @@ LEFT JOIN AtendimentoIteracao I WITH (NOLOCK)
     ON I.NumAtendimento = A.NumAtendimento
     AND I.Desdobramento = A.Desdobramento
 WHERE
-    A.AssuntoAtendimento = N'Implantação'
-    AND A.Situacao = 1
-    AND A.CodClassificacaoAtendimento = 51
-    AND A.Desdobramento = 0
+    A.Situacao = 1
+    AND A.CodClassificacaoAtendimento = 50
 GROUP BY
     A.NumAtendimento,
     A.Desdobramento,
