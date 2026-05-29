@@ -273,6 +273,7 @@ SELECT
     C.NomeCliente,
     A.Situacao,
 	U.NomeUsuario,
+    G.NomeGrupoEmpresa,
     (
         SELECT MAX(I2.RegInclusao)
         FROM AtendimentoIteracao I2 WITH (NOLOCK)
@@ -292,6 +293,8 @@ INNER JOIN CnsClientes C WITH (NOLOCK)
     AND A.CodEmpresa = C.CodEmpresa
 INNER JOIN Usuarios U WITH (NOLOCK)
     ON A.CodUsuario = U.CodUsuario
+LEFT JOIN GrupoEmpresa G WITH (NOLOCK)
+    ON C.CodGrupoEmpresa = G.CodGrupoEmpresa
 WHERE
     A.CodClassificacaoAtendimento IN (7, 46, 29, 47, 51, 48, 49, 8)
     AND A.Situacao = 0
@@ -312,6 +315,7 @@ SELECT
     C.NomeCliente,
     A.Situacao,
     U.NomeUsuario,
+    G.NomeGrupoEmpresa,
     MAX(I.RegInclusao) AS UltimaIteracao,
     (
         SELECT TOP 1 CONVERT(NVARCHAR(MAX), I2.TextoIteracao)
@@ -326,6 +330,8 @@ INNER JOIN CnsClientes C WITH (NOLOCK)
     AND A.CodEmpresa = C.CodEmpresa
 INNER JOIN Usuarios U WITH (NOLOCK)
     ON A.CodUsuario = U.CodUsuario
+LEFT JOIN GrupoEmpresa G WITH (NOLOCK)
+    ON C.CodGrupoEmpresa = G.CodGrupoEmpresa
 LEFT JOIN AtendimentoIteracao I WITH (NOLOCK)
     ON I.NumAtendimento = A.NumAtendimento
     AND I.Desdobramento = A.Desdobramento
@@ -340,7 +346,8 @@ GROUP BY
     A.CodCliente,
     C.NomeCliente,
     A.Situacao,
-    U.NomeUsuario
+    U.NomeUsuario,
+    G.NomeGrupoEmpresa
 ORDER BY
     C.NomeCliente;
 
@@ -1282,6 +1289,9 @@ def show_kanban():
                         ui.label('🔍 Buscar cliente').classes('text-xs text-gray-500 font-medium')
                         fin_search = ui.input(placeholder='Digite parte do nome…').classes('w-56').style('background:#fff;border-radius:6px;')
                     with ui.column().classes('gap-0'):
+                        ui.label('🏢 Grupo Empresa').classes('text-xs text-gray-500 font-medium')
+                        fin_grupo = ui.input(placeholder='Parte do nome do grupo…').classes('w-48').style('background:#fff;border-radius:6px;')
+                    with ui.column().classes('gap-0'):
                         ui.label('📅 Filtrar por ano').classes('text-xs text-gray-500 font-medium')
                         fin_year = ui.select(year_opts, value='Todos').classes('w-32').style('background:#fff;border-radius:6px;')
                     with ui.column().classes('gap-0'):
@@ -1304,11 +1314,13 @@ def show_kanban():
                     except Exception:
                         pass
                     st = (fin_search.value or '').strip().lower()
+                    sg = (fin_grupo.value or '').strip().lower()
                     sv = fin_sort.value
                     to_show = [
                         (c, ab, ul, dur) for c, ab, ul, dur in processed
                         if not (yf and (not ul or ul.year != yf))
                         and (not st or st in sanitize_text(c.get('NomeCliente') or '').lower())
+                        and (not sg or sg in sanitize_text(c.get('NomeGrupoEmpresa') or '').lower())
                     ]
                     if sv == 'Cliente A → Z':
                         to_show.sort(key=lambda t: sanitize_text(t[0].get('NomeCliente') or '').lower())
@@ -1360,6 +1372,7 @@ def show_kanban():
                         ui.html('<div class="fin-grid">' + ''.join(html_cards) + '</div>', sanitize=False)
 
                 fin_search.on('keydown.enter', lambda _=None: _fin_render())
+                fin_grupo.on('keydown.enter', lambda _=None: _fin_render())
                 fin_year.on('update:model-value', lambda _=None: _fin_render())
                 fin_sort.on('update:model-value', lambda _=None: _fin_render())
                 _fin_render()
@@ -1415,6 +1428,11 @@ def show_kanban():
                         'background:#fff;border-radius:6px;'
                     )
                 with ui.column().classes('gap-0'):
+                    ui.label('🏢 Grupo Empresa').classes('text-xs text-gray-500 font-medium')
+                    filter_grupo = ui.input(placeholder='Parte do nome do grupo…').classes('w-52').style(
+                        'background:#fff;border-radius:6px;'
+                    )
+                with ui.column().classes('gap-0'):
                     ui.label('👤 Responsável').classes('text-xs text-gray-500 font-medium')
                     filter_usuario = ui.input(placeholder='Parte do nome do responsável…').classes('w-52').style(
                         'background:#fff;border-radius:6px;'
@@ -1448,7 +1466,7 @@ def show_kanban():
         dashboard_col = ui.column().classes('w-full').style('gap:0; padding:0 16px 24px 16px;')
 
     # ── estado do filtro ativo ─────────────────────────────────────────────
-    active_filter = {'cliente': '', 'usuario': '', 'contato_hoje': False, 'atraso': False}
+    active_filter = {'cliente': '', 'usuario': '', 'grupo': '', 'contato_hoje': False, 'atraso': False}
 
     # ── helpers de data ────────────────────────────────────────────────────
     def _parse_dt(v):
@@ -1476,16 +1494,19 @@ def show_kanban():
     def _apply_filter(_=None):
         active_filter['cliente'] = (filter_cliente.value or '').strip().lower()
         active_filter['usuario'] = (filter_usuario.value or '').strip().lower()
+        active_filter['grupo']   = (filter_grupo.value or '').strip().lower()
         render_dashboard()
-        fc, fu = active_filter['cliente'], active_filter['usuario']
-        if fc or fu:
+        fc, fu, fg = active_filter['cliente'], active_filter['usuario'], active_filter['grupo']
+        if fc or fu or fg:
             total = sum(
                 len([c for c in (column_cards.get(col, []) or [])
                      if (not fc or fc in sanitize_text(c.get('NomeCliente') or '').lower())
-                     and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())])
+                     and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())
+                     and (not fg or fg in sanitize_text(c.get('NomeGrupoEmpresa') or '').lower())])
                 for col, _, _ in COLUMNS
             )
             parts = ([f'cliente "{filter_cliente.value}"'] if fc else []) + \
+                    ([f'grupo "{filter_grupo.value}"'] if fg else []) + \
                     ([f'responsável "{filter_usuario.value}"'] if fu else [])
             filter_count_label.set_text(f'🔎 {total} card(s) — {" + ".join(parts)}')
         else:
@@ -1494,17 +1515,20 @@ def show_kanban():
     def _clear_filter(_=None):
         filter_cliente.set_value('')
         filter_usuario.set_value('')
-        active_filter.update({'cliente': '', 'usuario': '', 'contato_hoje': False, 'atraso': False})
+        filter_grupo.set_value('')
+        active_filter.update({'cliente': '', 'usuario': '', 'grupo': '', 'contato_hoje': False, 'atraso': False})
         filter_count_label.set_text('')
         render_dashboard()
 
     filter_cliente.on('keydown.enter', _apply_filter)
     filter_usuario.on('keydown.enter', _apply_filter)
+    filter_grupo.on('keydown.enter', _apply_filter)
 
     # ── render principal ───────────────────────────────────────────────────
     def render_dashboard(cols_to_update=None):
         fc = active_filter.get('cliente', '')
         fu = active_filter.get('usuario', '')
+        fg = active_filter.get('grupo', '')
         fch = active_filter.get('contato_hoje', False)
         fat = active_filter.get('atraso', False)
         hoje = datetime.now().date()
@@ -1517,16 +1541,26 @@ def show_kanban():
             filt = [c for c in raw
                     if (not fc or fc in sanitize_text(c.get('NomeCliente') or '').lower())
                     and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())
+                    and (not fg or fg in sanitize_text(c.get('NomeGrupoEmpresa') or '').lower())
                     and (not fch or (
                         (dt := _parse_dt(c.get('DataProxContato'))) is not None
                         and dt.date() == hoje
                     ))
-                    and (not fat or (_days_since(c.get('Abertura')) or 0) > 120)]
+                    and (not fat or (
+                        (_days_since(c.get('Abertura')) or 0) > 120
+                        and not (_parse_dt(c.get('DataProxContato')) is not None
+                                 and _parse_dt(c.get('DataProxContato')).date() == hoje)
+                    ))]
             col_filtered[col_name] = (filt, col_color)
             all_cards.extend(filt)
 
         total_geral = len(all_cards)
-        n_atrasados = sum(1 for c in all_cards if (_days_since(c.get('Abertura')) or 0) > 120)
+        n_atrasados = sum(
+            1 for c in all_cards
+            if (_days_since(c.get('Abertura')) or 0) > 120
+            and not (_parse_dt(c.get('DataProxContato')) is not None
+                     and _parse_dt(c.get('DataProxContato')).date() == hoje)
+        )
         n_prox_hoje = sum(
             1 for c in all_cards
             if (dt := _parse_dt(c.get('DataProxContato'))) and dt.date() == hoje
