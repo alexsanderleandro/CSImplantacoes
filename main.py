@@ -1153,7 +1153,7 @@ def show_login():
 
                 # versão
                 ui.html(
-                    f'<div class="login-version" style="margin-top:32px;">v{APP_VERSION}</div>',
+                    f'<div class="login-version" style="margin-top:52px;padding-top:16px;border-top:1px solid #e2e8f0;">v{APP_VERSION}</div>',
                     sanitize=False)
     # footer já criado no nível do módulo
 
@@ -1448,7 +1448,7 @@ def show_kanban():
         dashboard_col = ui.column().classes('w-full').style('gap:0; padding:0 16px 24px 16px;')
 
     # ── estado do filtro ativo ─────────────────────────────────────────────
-    active_filter = {'cliente': '', 'usuario': '', 'contato_hoje': False}
+    active_filter = {'cliente': '', 'usuario': '', 'contato_hoje': False, 'atraso': False}
 
     # ── helpers de data ────────────────────────────────────────────────────
     def _parse_dt(v):
@@ -1494,7 +1494,7 @@ def show_kanban():
     def _clear_filter(_=None):
         filter_cliente.set_value('')
         filter_usuario.set_value('')
-        active_filter.update({'cliente': '', 'usuario': '', 'contato_hoje': False})
+        active_filter.update({'cliente': '', 'usuario': '', 'contato_hoje': False, 'atraso': False})
         filter_count_label.set_text('')
         render_dashboard()
 
@@ -1506,6 +1506,7 @@ def show_kanban():
         fc = active_filter.get('cliente', '')
         fu = active_filter.get('usuario', '')
         fch = active_filter.get('contato_hoje', False)
+        fat = active_filter.get('atraso', False)
         hoje = datetime.now().date()
 
         # filtrar por coluna
@@ -1519,7 +1520,8 @@ def show_kanban():
                     and (not fch or (
                         (dt := _parse_dt(c.get('DataProxContato'))) is not None
                         and dt.date() == hoje
-                    ))]
+                    ))
+                    and (not fat or (_days_since(c.get('Abertura')) or 0) > 120)]
             col_filtered[col_name] = (filt, col_color)
             all_cards.extend(filt)
 
@@ -1554,14 +1556,29 @@ def show_kanban():
 
             # ── KPIs ─────────────────────────────────────────────────────
             with ui.row().classes('w-full gap-3 py-3 flex-wrap items-stretch'):
-                for icon, label, val, bg, fg in [
-                    ('📋', 'Total ativo',      str(total_geral), '#dbeafe', '#1e40af'),
-                    ('🔴', 'Em atraso >120d',  str(n_atrasados), '#fee2e2', '#b91c1c'),
-                ]:
+                # KPI Total ativo (estático)
+                ui.html(
+                    f'<div class="db-kpi" style="background:#dbeafe;border-color:#dbeafe;">'
+                    f'<div style="font-size:.68rem;font-weight:600;color:#1e40af;margin-bottom:4px;">📋 Total ativo</div>'
+                    f'<div style="font-size:1.6rem;font-weight:700;color:#1e40af;">{total_geral}</div></div>',
+                    sanitize=False)
+                # KPI Em atraso – clicável (toggle filtro)
+                _fat_active = active_filter.get('atraso', False)
+                _at_bg = '#f87171' if _fat_active else '#fee2e2'
+                _at_border = '#dc2626' if _fat_active else '#fee2e2'
+                _at_fg = '#7f1d1d'
+                with ui.element('div').style(
+                    f'background:{_at_bg};border:2px solid {_at_border};border-radius:10px;'
+                    f'padding:14px 20px;text-align:center;min-width:120px;'
+                    f'box-shadow:0 1px 4px rgba(0,0,0,.06);cursor:pointer;'
+                ).on('click', lambda: [
+                    active_filter.update({'atraso': not active_filter.get('atraso', False)}),
+                    render_dashboard()
+                ]):
                     ui.html(
-                        f'<div class="db-kpi" style="background:{bg};border-color:{bg};">'
-                        f'<div style="font-size:.68rem;font-weight:600;color:{fg};margin-bottom:4px;">{icon} {label}</div>'
-                        f'<div style="font-size:1.6rem;font-weight:700;color:{fg};">{val}</div></div>',
+                        f'<div style="font-size:.68rem;font-weight:600;color:{_at_fg};margin-bottom:4px;">'
+                        f'🔴 Em atraso >120d{" ✕" if _fat_active else ""}</div>'
+                        f'<div style="font-size:1.6rem;font-weight:700;color:{_at_fg};">{n_atrasados}</div>',
                         sanitize=False)
                 # KPI Contato hoje – clicável (toggle filtro)
                 _fch_active = active_filter.get('contato_hoje', False)
