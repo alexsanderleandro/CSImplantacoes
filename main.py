@@ -1,4 +1,4 @@
-# main.py
+﻿# main.py
 # Adiar import de nicegui para evitar efeitos colaterais durante import/module load
 # (ex.: leitura do registro no Windows feita por algumas libs). As variáveis serão
 # inicializadas em start_app().
@@ -249,14 +249,14 @@ def normalize_description(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 COLUMNS = [
-    ("A iniciar", "#7fb0f8", 100),
-    ("Visita pré-implantação", "#a3a3a3", 101),
-    ("Instalação do sistema", "#af95fa", 102),
-    ("Implantação em andamento", "#769c8a", 103),
-    ("Aguardando RDM", "#c2410c", 51),
-    ("Implantação pausada", "#948f67", 104),
-    ("Implantação cancelada", "#D6C845", 105),
-    ("Visita pós-implantação", "#4F75C9", 106),
+    ("A iniciar",                 "#b3e2cd", 100),  # Pastel2[0] verde menta
+    ("Visita pré-implantação",    "#fdcdac", 101),  # Pastel2[1] pêssego
+    ("Instalação do sistema",     "#cbd5e8", 102),  # Pastel2[2] azul acinzentado
+    ("Implantação em andamento",  "#f4cae4", 103),  # Pastel2[3] rosa
+    ("Aguardando RDM",            "#e6f5c9", 51),   # Pastel2[4] verde claro
+    ("Implantação pausada",       "#fff2ae", 104),  # Pastel2[5] amarelo
+    ("Implantação cancelada",     "#f1e2cc", 105),  # Pastel2[6] bege
+    ("Visita pós-implantação",    "#cccccc", 106),  # Pastel2[7] cinza
 ]
 COLUMN_MAP = {name: {"color": color, "situacao": situ} for (name, color, situ) in COLUMNS}
 
@@ -1117,7 +1117,7 @@ def show_kanban():
                     total_added   += len(added)
                     total_removed += len(removed)
             if changed_cols:
-                render_board(cols_to_update=changed_cols)
+                render_dashboard()
             else:
                 ui.notify('Nenhuma alteração detectada nos cards.', color='info')
                 return
@@ -1334,748 +1334,539 @@ def show_kanban():
                 ).style('background:#e5e7eb;color:#374151;border-radius:6px;padding:6px 14px;align-self:flex-end;')
                 filter_count_label = ui.label('').classes('text-sm text-gray-500 self-end')
 
-    # board responsivo: permite overflow-x em telas pequenas e distribui colunas em telas maiores
-    with root:
-        board = ui.row().classes("w-full gap-4 items-start").style("overflow-x: auto;")
-    # Colocar os cards inicialmente nas colunas de acordo com CodClassificacaoAtendimento
-    for row in cards_data:
+    # ── distribuir cards iniciais ─────────────────────────────────────────
+    _CLASS_TO_COL = {
+        7: 'A iniciar', 46: 'Visita pré-implantação', 29: 'Instalação do sistema',
+        47: 'Implantação em andamento', 51: 'Aguardando RDM',
+        48: 'Implantação pausada', 49: 'Implantação cancelada', 8: 'Visita pós-implantação',
+    }
+    for _row in cards_data:
         try:
-            code = row.get('CodClassificacaoAtendimento')
-            try:
-                code_int = int(code) if code is not None else None
-            except Exception:
-                code_int = None
-            # mapa de classificação -> coluna conforme regra solicitada
-            classification_to_column = {
-                7: "A iniciar",
-                46: "Visita pré-implantação",
-                29: "Instalação do sistema",
-                47: "Implantação em andamento",
-                48: "Implantação pausada",
-                49: "Implantação cancelada",
-                8: "Visita pós-implantação",
-                51: "Aguardando RDM",
-            }
-            # somente incluir cards que possuam uma classificação conhecida/mapeada
-            if code_int in classification_to_column:
-                dest = classification_to_column[code_int]
-                column_cards.setdefault(dest, []).append(row)
-            else:
-                # pular atendimentos sem classificação vinculada ao dashboard
-                continue
+            _code = _row.get('CodClassificacaoAtendimento')
+            _code_int = int(_code) if _code is not None else None
+            _dest = _CLASS_TO_COL.get(_code_int)
+            if _dest:
+                column_cards.setdefault(_dest, []).append(_row)
         except Exception:
-            # em caso de erro, pular este registro
             continue
+
+    # ── container principal do dashboard ──────────────────────────────────
+    with root:
+        dashboard_col = ui.column().classes('w-full').style('gap:0; padding:0 16px 24px 16px;')
 
     # ── estado do filtro ativo ─────────────────────────────────────────────
     active_filter = {'cliente': '', 'usuario': ''}
 
+    # ── helpers de data ────────────────────────────────────────────────────
+    def _parse_dt(v):
+        if v is None:
+            return None
+        if isinstance(v, datetime):
+            return v
+        s = v.decode(errors='ignore') if isinstance(v, (bytes, bytearray)) else str(v)
+        for fmt in ('%Y-%m-%d %H:%M:%S.%f', '%Y-%m-%d %H:%M:%S', '%Y-%m-%d',
+                    '%d/%m/%Y %H:%M:%S', '%d/%m/%Y'):
+            try:
+                return datetime.strptime(s, fmt)
+            except Exception:
+                pass
+        return None
+
+    def _days_since(v):
+        dt = _parse_dt(v)
+        return (datetime.now() - dt).days if dt else None
+
+    def _fmt_date(v):
+        dt = _parse_dt(v)
+        return dt.strftime('%d/%m/%Y') if dt else '-'
+
     def _apply_filter(_=None):
         active_filter['cliente'] = (filter_cliente.value or '').strip().lower()
         active_filter['usuario'] = (filter_usuario.value or '').strip().lower()
-        render_board()
-        # atualizar label de contagem total filtrada
-        try:
-            fc = active_filter['cliente']
-            fu = active_filter['usuario']
-            if fc or fu:
-                total_filtrado = sum(
-                    len([c for c in (column_cards.get(col, []) or [])
-                         if (not fc or fc in sanitize_text(c.get('NomeCliente') or '').lower())
-                         and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())])
-                    for col, _, _ in COLUMNS
-                )
-                parts = []
-                if fc:
-                    parts.append(f'cliente "{filter_cliente.value}"')
-                if fu:
-                    parts.append(f'responsável "{filter_usuario.value}"')
-                filter_count_label.set_text(f'🔎 {total_filtrado} card(s) — filtro: {" + ".join(parts)}')
-            else:
-                filter_count_label.set_text('')
-        except Exception:
-            pass
+        render_dashboard()
+        fc, fu = active_filter['cliente'], active_filter['usuario']
+        if fc or fu:
+            total = sum(
+                len([c for c in (column_cards.get(col, []) or [])
+                     if (not fc or fc in sanitize_text(c.get('NomeCliente') or '').lower())
+                     and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())])
+                for col, _, _ in COLUMNS
+            )
+            parts = ([f'cliente "{filter_cliente.value}"'] if fc else []) + \
+                    ([f'responsável "{filter_usuario.value}"'] if fu else [])
+            filter_count_label.set_text(f'🔎 {total} card(s) — {" + ".join(parts)}')
+        else:
+            filter_count_label.set_text('')
 
     def _clear_filter(_=None):
         filter_cliente.set_value('')
         filter_usuario.set_value('')
-        active_filter['cliente'] = ''
-        active_filter['usuario'] = ''
+        active_filter.update({'cliente': '', 'usuario': ''})
         filter_count_label.set_text('')
-        render_board()
+        render_dashboard()
 
-    # ligar Enter nos campos de filtro
     filter_cliente.on('keydown.enter', _apply_filter)
     filter_usuario.on('keydown.enter', _apply_filter)
 
-    def render_board(cols_to_update=None):
-        """Renderiza colunas. Se cols_to_update for None, renderiza todas; caso contrário
-        apenas atualiza as colunas listadas (nomes).
-        """
+    # ── render principal ───────────────────────────────────────────────────
+    def render_dashboard(cols_to_update=None):
+        fc = active_filter.get('cliente', '')
+        fu = active_filter.get('usuario', '')
+        hoje = datetime.now().date()
 
-        def _format_datetime(value):
-            if value is None:
-                return "-"
-            if isinstance(value, datetime):
-                return value.strftime("%Y-%m-%d %H:%M:%S")
-            try:
-                s = value.decode(errors="ignore") if isinstance(value, (bytes, bytearray)) else str(value)
-                for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
-                    try:
-                        dt = datetime.strptime(s, fmt)
-                        return dt.strftime("%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        continue
-                return sanitize_text(s)
-            except Exception:
-                return sanitize_text(str(value))
+        # filtrar por coluna
+        col_filtered = {}
+        all_cards = []
+        for col_name, col_color, _ in COLUMNS:
+            raw = column_cards.get(col_name, []) or []
+            filt = [c for c in raw
+                    if (not fc or fc in sanitize_text(c.get('NomeCliente') or '').lower())
+                    and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())]
+            col_filtered[col_name] = (filt, col_color)
+            all_cards.extend(filt)
 
-        def _days_open_for_card(card_item):
-            try:
-                av = card_item.get("Abertura")
-                if av is None:
-                    return -1
-                if isinstance(av, datetime):
-                    dt = av
-                else:
-                    s = av.decode(errors="ignore") if isinstance(av, (bytes, bytearray)) else str(av)
-                    dt = None
-                    for fmt in (
-                        "%Y-%m-%d %H:%M:%S.%f",
-                        "%Y-%m-%d %H:%M:%S",
-                        "%Y-%m-%d",
-                        "%d/%m/%Y %H:%M:%S",
-                        "%d/%m/%Y",
-                    ):
-                        try:
-                            dt = datetime.strptime(s, fmt)
-                            break
-                        except Exception:
-                            continue
-                if not dt:
-                    return -1
-                return (datetime.now() - dt).days
-            except Exception:
-                return -1
+        total_geral = len(all_cards)
+        n_atrasados = sum(1 for c in all_cards if (_days_since(c.get('Abertura')) or 0) > 120)
+        n_prox_hoje = sum(
+            1 for c in all_cards
+            if (dt := _parse_dt(c.get('DataProxContato'))) and dt.date() == hoje
+        )
 
-        # criar colunas (header + container) na primeira chamada
-        if not column_containers:
-            board.clear()
-            with board:
-                for col_name, bg_color, _ in COLUMNS:
-                    with ui.column().classes("basis-0 flex-1").style("min-width: 12rem;"):
-                        # criar label de cabeçalho e manter referência para atualização do total
-                        header_label = ui.label(col_name).classes("text-md font-semibold p-2 rounded w-full text-center").style(
-                            f"background:{bg_color};color:#ffffff !important;"
-                        )
-                        header_labels[col_name] = header_label
-                        cards_container = ui.column().classes("p-2")
-                        column_containers[col_name] = cards_container
+        dashboard_col.clear()
+        with dashboard_col:
+            # ── CSS ─────────────────────────────────────────────────────
+            ui.html("""<style>
+              .db-kpi{background:#fff;border:1px solid #e2e8f0;border-radius:10px;
+                      padding:14px 20px;text-align:center;min-width:120px;
+                      box-shadow:0 1px 4px rgba(0,0,0,.06);}
+              .db-chip{display:inline-block;border-radius:20px;padding:1px 9px;
+                       font-size:.7rem;font-weight:600;white-space:nowrap;}
+              .db-row{display:flex;align-items:center;gap:10px;padding:8px 14px;
+                      border-bottom:1px solid #f1f5f9;}
+              .db-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0;}
+              .db-act{border:1px solid #e2e8f0!important;border-radius:5px!important;
+                      padding:2px 10px!important;font-size:.72rem!important;
+                      background:#fff!important;color:#374151!important;
+                      box-shadow:none!important;min-height:unset!important;}
+              .db-act:hover{background:#f1f5f9!important;}
+              .db-section{border-radius:8px;overflow:hidden;margin-bottom:10px;
+                          box-shadow:0 1px 4px rgba(0,0,0,.05);}
+              .db-section>.q-expansion-item__container>.q-item{color:#1e293b!important;font-weight:600;}
+            </style>""", sanitize=False)
 
-        cols = [c[0] for c in COLUMNS] if cols_to_update is None else cols_to_update
-        for col_name in cols:
-            cards_container = column_containers.get(col_name)
-            if cards_container is None:
-                continue
-            try:
-                cards_container.clear()
-            except Exception:
-                pass
+            # ── KPIs ─────────────────────────────────────────────────────
+            with ui.row().classes('w-full gap-3 py-3 flex-wrap items-stretch'):
+                for icon, label, val, bg, fg in [
+                    ('📋', 'Total ativo',      str(total_geral), '#dbeafe', '#1e40af'),
+                    ('🔴', 'Em atraso >120d',  str(n_atrasados), '#fee2e2', '#b91c1c'),
+                    ('📅', 'Contato hoje',      str(n_prox_hoje), '#fef9c3', '#854d0e'),
+                ]:
+                    ui.html(
+                        f'<div class="db-kpi" style="background:{bg};border-color:{bg};">'
+                        f'<div style="font-size:.68rem;font-weight:600;color:{fg};margin-bottom:4px;">{icon} {label}</div>'
+                        f'<div style="font-size:1.6rem;font-weight:700;color:{fg};">{val}</div></div>',
+                        sanitize=False)
+                for col_name, col_color, _ in COLUMNS:
+                    cnt = len(col_filtered[col_name][0])
+                    ui.html(
+                        f'<div class="db-kpi" style="background:{col_color};border-color:{col_color};border-top:3px solid {col_color};min-width:110px;">'
+                        f'<div style="font-size:.65rem;font-weight:600;color:#374151;margin-bottom:3px;">'
+                        f'{sanitize_text(col_name)}</div>'
+                        f'<div style="font-size:1.3rem;font-weight:700;color:#1e293b;">{cnt}</div></div>',
+                        sanitize=False)
 
-            try:
-                # ordenar e aplicar filtros de texto
-                all_cards = sorted(column_cards.get(col_name, []) or [], key=_days_open_for_card, reverse=True)
-                fc = active_filter.get('cliente', '')
-                fu = active_filter.get('usuario', '')
-                if fc or fu:
-                    cards_to_render = [
-                        c for c in all_cards
-                        if (not fc or fc in sanitize_text(c.get('NomeCliente') or '').lower())
-                        and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())
-                    ]
-                else:
-                    cards_to_render = all_cards
-            except Exception:
-                cards_to_render = column_cards.get(col_name, []) or []
+            # ── grupos por status ────────────────────────────────────────
+            for col_name, col_color, _ in COLUMNS:
+                cards_in_col, _ = col_filtered[col_name]
+                cards_sorted = sorted(
+                    cards_in_col,
+                    key=lambda c: (_days_since(c.get('Abertura')) or 0),
+                    reverse=True
+                )
+                with ui.expansion(
+                    f'{col_name}   ({len(cards_in_col)})',
+                ).classes('w-full db-section').style(
+                    f'border-left:4px solid {col_color};background:#fff;'
+                ).props(f'header-style="background:{col_color};color:#1e293b;font-weight:600;"'):
+                    if not cards_in_col:
+                        with ui.row().classes('px-4 py-3'):
+                            ui.label('Nenhum registro neste status.').classes('text-sm text-gray-400 italic')
+                    for card in cards_sorted:
+                        num      = card.get('NumAtendimento')
+                        nome     = sanitize_text(card.get('NomeCliente') or '-')
+                        resp     = sanitize_text(card.get('NomeUsuario') or '-')
+                        days     = _days_since(card.get('Abertura'))
+                        prox_v   = card.get('DataProxContato')
+                        prox_str = _fmt_date(prox_v)
+                        prox_dt  = _parse_dt(prox_v)
+                        atrasado     = (days or 0) > 120
+                        prox_vencida = prox_dt and prox_dt.date() < hoje
+                        prox_hoje_flag = prox_dt and prox_dt.date() == hoje
+                        days_bg  = '#fee2e2' if atrasado else '#dbeafe'
+                        days_fg  = '#b91c1c' if atrasado else '#1e40af'
+                        days_txt = f'{days}d' if days is not None else '?'
+                        prox_clr = ('#dc2626' if prox_vencida else
+                                    ('#d97706' if prox_hoje_flag else '#2563eb'))
+                        prox_icon = ('🔴' if prox_vencida else
+                                     ('🟡' if prox_hoje_flag else '📅'))
+                        texto_raw = card.get('TextoIteracao') or ''
+                        desdob    = card.get('Desdobramento')
 
-            # atualizar totalizador levando em conta filtro
-            try:
-                cnt = len(cards_to_render)
-                header = header_labels.get(col_name)
-                if header:
-                    header.set_text(f"{col_name} - {cnt}")
-            except Exception:
-                pass
+                        with ui.row().classes(
+                            'items-center gap-2 w-full flex-wrap'
+                        ).style('border-bottom:1px solid #f1f5f9;padding:8px 14px;'):
+                            # dot colorido
+                            ui.html(
+                                f'<span class="db-dot" style="background:{col_color};"></span>',
+                                sanitize=False)
+                            # nome + número
+                            ui.html(
+                                f'<span style="font-weight:600;font-size:.88rem;color:#0f172a;'
+                                f'min-width:180px;max-width:260px;overflow:hidden;'
+                                f'text-overflow:ellipsis;white-space:nowrap;" title="{nome}">'
+                                f'<span style="color:#94a3b8;font-weight:400;">#{num}</span> {nome}</span>',
+                                sanitize=False)
+                            # responsável
+                            ui.html(
+                                f'<span style="font-size:.78rem;color:#64748b;min-width:110px;">'
+                                f'👤 {resp}</span>',
+                                sanitize=False)
+                            # dias aberto
+                            ui.html(
+                                f'<span class="db-chip" style="background:{days_bg};color:{days_fg};">'
+                                f'⏱ {days_txt}</span>',
+                                sanitize=False)
+                            # próximo contato
+                            ui.html(
+                                f'<span style="font-size:.78rem;color:{prox_clr};">'
+                                f'{prox_icon} {prox_str}</span>',
+                                sanitize=False)
+                            # alertas
+                            if atrasado:
+                                ui.html(
+                                    '<span class="db-chip" style="background:#fee2e2;color:#b91c1c;">⚠ Atraso</span>',
+                                    sanitize=False)
+                            if prox_vencida:
+                                ui.html(
+                                    '<span class="db-chip" style="background:#fef9c3;color:#854d0e;">📞 Vencido</span>',
+                                    sanitize=False)
 
-            for card in cards_to_render:
-                num = card.get("NumAtendimento")
-                cliente = sanitize_text(card.get("NomeCliente") or "-")
-                ultima = _format_datetime(card.get("UltimaIteracao"))
-                texto_raw = card.get("TextoIteracao") or ""
-
-                with cards_container:
-                    with ui.card().classes("mb-3 shadow-sm").style(
-                        f"border-left:4px solid {COLUMN_MAP.get(col_name, {}).get('color', '#ffffff')};"
-                    ):
-                        # header: cliente, responsável e número do atendimento (num abaixo)
-                        try:
-                            ui.label(cliente).classes("font-semibold text-lg")
-                        except Exception:
-                            ui.label(cliente).classes("font-semibold text-lg")
-
-                        # Mostrar responsável (NomeUsuario) vindo do select principal
-                        try:
-                            responsavel = sanitize_text(card.get('NomeUsuario') or '-')
-                            ui.label(f"Responsável: {responsavel}").classes("text-sm text-gray-600 mt-0 mb-0")
-                        except Exception:
-                            pass
-
-                        # Mostrar número do atendimento em linha própria abaixo do cliente
-                        try:
-                            ui.label(f"Atend.: #{num}").classes("text-sm text-gray-600 mt-1 mb-1")
-                        except Exception:
-                            ui.label(f"#{num}").classes("text-sm text-gray-600 ml-2")
-
-                        # Abertura (dias em aberto) e Próximo contato
-                        abertura_val = card.get("Abertura")
-                        dt_abertura = None
-                        try:
-                            if isinstance(abertura_val, datetime):
-                                dt_abertura = abertura_val
-                            else:
-                                s = (
-                                    abertura_val.decode(errors="ignore")
-                                    if isinstance(abertura_val, (bytes, bytearray))
-                                    else str(abertura_val)
-                                )
-                                for fmt in (
-                                    "%Y-%m-%d %H:%M:%S.%f",
-                                    "%Y-%m-%d %H:%M:%S",
-                                    "%Y-%m-%d",
-                                    "%d/%m/%Y %H:%M:%S",
-                                    "%d/%m/%Y",
-                                ):
-                                    try:
-                                        dt_abertura = datetime.strptime(s, fmt)
-                                        break
-                                    except Exception:
-                                        continue
-                        except Exception:
-                            dt_abertura = None
-
-                        days_open = None
-                        try:
-                            if dt_abertura:
-                                days_open = (datetime.now() - dt_abertura).days
-                        except Exception:
-                            days_open = None
-
-                        if days_open is not None:
-                            try:
-                                color_class = "text-blue-600" if int(days_open) <= 120 else "text-red-600"
-                            except Exception:
-                                color_class = "text-red-600"
-                            lbl = ui.label(f"Aberto há {days_open} dias").classes(
-                                f"text-sm font-bold {color_class} ml-0"
-                            )
-                            try:
-                                if dt_abertura:
-                                    ui.tooltip(lbl, f"Data de abertura: {dt_abertura.strftime('%d/%m/%Y')}")
-                            except Exception:
-                                pass
-
-                        # Próximo contato
-                        prox_val = card.get("DataProxContato")
-                        dt_prox = None
-                        try:
-                            if isinstance(prox_val, datetime):
-                                dt_prox = prox_val
-                            else:
-                                s = (
-                                    prox_val.decode(errors="ignore")
-                                    if isinstance(prox_val, (bytes, bytearray))
-                                    else str(prox_val)
-                                )
-                                for fmt in (
-                                    "%Y-%m-%d %H:%M:%S.%f",
-                                    "%Y-%m-%d %H:%M:%S",
-                                    "%Y-%m-%d",
-                                    "%d/%m/%Y %H:%M:%S",
-                                    "%d/%m/%Y",
-                                ):
-                                    try:
-                                        dt_prox = datetime.strptime(s, fmt)
-                                        break
-                                    except Exception:
-                                        continue
-                        except Exception:
-                            dt_prox = None
-
-                        if dt_prox:
-                            try:
-                                prox_date_str = dt_prox.strftime("%d/%m/%Y")
-                            except Exception:
-                                prox_date_str = sanitize_text(str(prox_val))
-                        else:
-                            prox_date_str = "-"
-
-                        prox_color = "text-gray-500"
-                        try:
-                            if dt_prox:
-                                today = datetime.now().date()
-                                pd = dt_prox.date()
-                                if pd < today:
-                                    prox_color = "text-red-600"
-                                elif pd == today:
-                                    prox_color = "text-black"
-                                else:
-                                    prox_color = "text-blue-600"
-                        except Exception:
-                            prox_color = "text-gray-500"
-
-                        ui.label(f"Próximo contato: {prox_date_str}").classes(f"text-sm {prox_color} mt-1 mb-1")
-
-                        # última interação e snippet
-                        texto = limpar_rtf(texto_raw)
-                        snippet = (texto[:250] + "...") if len(texto) > 250 else texto
-                        snippet = sanitize_text(snippet)
-                        # aumentar tamanho da fonte para ficar igual ao texto do snippet/descrição
-                        ui.label(f"Última interação: {ultima}").classes("text-sm text-gray-700 mb-1")
-                        if snippet:
-                            ui.label(snippet).classes("text-sm text-gray-700 mb-2")
-
-                        # mostrar observação de movimento (informativo em memória) se existir
-                        move_note = card.get('_last_move')
-                        if move_note:
-                            ui.label(move_note).classes('text-sm text-gray-600 mb-1').style('font-style:italic;')
-
-                        # agrupar analista e botões verticalmente para que os botões fiquem abaixo do nome
-                        with ui.column().classes("items-start gap-2"):
-                            desdob_val = card.get('Desdobramento')
-                            latest = fetch_latest_iteration(num, desdob_val)
-                            analyst = sanitize_text((latest.get("NomeUsuario") if latest else None) or "-")
-                            ui.label(f"Analista: {analyst}").classes("text-sm text-gray-600")
-                            desdob_val = card.get('Desdobramento')
+                            # ── botões de ação ────────────────────────────
                             ui.button(
-                                "Histórico",
-                                on_click=lambda _, n=num, d=desdob_val: show_history_dialog(n, d),
-                            ).classes("primary")
+                                'Histórico',
+                                on_click=lambda _, n=num, d=desdob: show_history_dialog(n, d)
+                            ).classes('db-act')
 
-                            # RDMs dialog
-                            def _show_rdms_local(_, n=num):
+                            def _rdm_click(_, n=num):
                                 rdms = fetch_rdms(n)
+                                dlg_r = ui.dialog()
+                                dlg_r.classes('w-full max-w-5xl')
+                                with dlg_r:
+                                    if not rdms:
+                                        ui.label('Nenhuma RDM encontrada').classes('text-sm text-gray-500')
+                                    else:
+                                        from collections import defaultdict as _dd
+                                        sm = _dd(list)
+                                        for r in rdms:
+                                            sm[r.get('SituacaoRDM')].append(r)
+                                        with ui.scroll_area().classes('w-full').style('max-height:80vh;'):
+                                            for sk in sorted(sm.keys(), key=lambda x: str(x)):
+                                                grp = sm[sk]
+                                                ui.label(f'{sanitize_text(str(sk) if sk else "")}: {len(grp)}').classes('text-sm font-semibold mt-2')
+                                                tm = _dd(list)
+                                                for r in grp:
+                                                    tm[r.get('NomeTipoRDM') or ''].append(r)
+                                                for tn in sorted(tm.keys()):
+                                                    ui.label(f'{sanitize_text(str(tn))}: {len(tm[tn])}').style(
+                                                        'background:#6b7280;color:#fff;padding:3px 8px;border-radius:5px;').classes('text-sm mb-1')
+                                                    for r in tm[tn]:
+                                                        md = (
+                                                            f"**Nº:** {sanitize_text(str(r.get('IdRdm') or ''))}/{sanitize_text(str(r.get('Desdobramento') or ''))}\n\n"
+                                                            f"**Tipo:** {sanitize_text(r.get('NomeTipoRDM') or '')}\n\n"
+                                                            f"**Situação:** {sanitize_text(r.get('SituacaoRDM') or '')}\n\n"
+                                                            f"**Descrição:** {sanitize_text(r.get('Descricao') or '')}"
+                                                        )
+                                                        with ui.card().classes('mb-2 p-3 w-full').style('background:#fff;'):
+                                                            ui.markdown(md).style('white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;')
+                                    with ui.row().classes('w-full mt-3 justify-center'):
+                                        ui.button('Fechar', on_click=lambda _=None: dlg_r.close()).classes('primary')
+                                dlg_r.open()
+                            ui.button('RDMs', on_click=_rdm_click).classes('db-act')
+
+                            def _atend_click(_, c=card):
+                                cod = c.get('CodCliente') or c.get('CodigoCliente') or c.get('CodCli')
+                                if not cod:
+                                    ui.notify('Código do cliente não disponível', color='warning')
+                                    return
+                                rows = fetch_atendimentos_por_cliente(cod) or []
+                                from collections import defaultdict as _dd2
+                                sg = _dd2(list)
+                                for r in rows:
+                                    try:
+                                        sg[int(r.get('Situacao'))].append(r)
+                                    except Exception:
+                                        sg[None].append(r)
+                                dlg_a = ui.dialog()
+                                dlg_a.classes('w-full')
+                                with dlg_a:
+                                    with ui.row().classes('w-full justify-center'):
+                                        with ui.column().classes('w-full max-w-3xl'):
+                                            with ui.card().classes('p-3').style('background:#fff;'):
+                                                ui.label(f'Total: {len(rows)}').style(
+                                                    'background:#7f1d1d;color:#fff;padding:4px;border-radius:6px;'
+                                                ).classes('text-sm font-semibold')
+                                                for sc, sl in ((0, 'Em aberto'), (1, 'Concluídos')):
+                                                    grp = sg.get(sc, [])
+                                                    ui.label(f'{sl}: {len(grp)}').classes('text-sm font-semibold mt-1')
+                                                    tm2 = _dd2(list)
+                                                    for r in grp:
+                                                        tm2[r.get('NomeTipoAtendimento') or ''].append(r)
+                                                    for tn in sorted(tm2.keys()):
+                                                        ui.label(f'{sanitize_text(str(tn))}: {len(tm2[tn])}').style(
+                                                            'background:#6b7280;color:#fff;padding:3px 8px;border-radius:5px;').classes('text-sm')
+                                                        for r in tm2[tn]:
+                                                            ui.label(
+                                                                f"{r.get('NumAtendimento')}/{r.get('Desdobramento')} — "
+                                                                f"{sanitize_text(str(r.get('AssuntoAtendimento') or ''))}"
+                                                            ).classes('text-sm ml-2')
+                                                with ui.row().classes('w-full justify-center mt-2'):
+                                                    ui.button('Fechar', on_click=lambda _=None: dlg_a.close()).classes('primary')
+                                dlg_a.open()
+                            ui.button('Atendimentos', on_click=_atend_click).classes('db-act')
+
+                            # imagem
+                            _img_avail = False
+                            try:
+                                _cached = get_image_flag_for_content(texto_raw)
+                                if _cached is None:
+                                    _ti, _tm = extract_first_image_from_rtf(texto_raw)
+                                    _img_avail = bool(_ti and _tm)
+                                    set_image_flag_for_content(texto_raw, _img_avail)
+                                else:
+                                    _img_avail = bool(_cached)
+                            except Exception:
+                                _img_avail = False
+
+                            if _img_avail:
+                                def _img_click(_, rtf=texto_raw):
+                                    ib, im = extract_first_image_from_rtf(rtf)
+                                    dlg_i = ui.dialog()
+                                    with dlg_i:
+                                        if ib and im:
+                                            ui.image(f'data:{im};base64,{base64.b64encode(ib).decode()}').style(IMG_STYLE)
+                                        else:
+                                            ui.label('[Imagem] — não foi possível extrair').classes('text-sm text-gray-600')
+                                        with ui.row().classes('w-full justify-end gap-2'):
+                                            ui.button('Fechar', on_click=lambda _=None: dlg_i.close()).classes('secondary')
+                                    dlg_i.open()
+                                ui.button('Imagem', on_click=_img_click).classes('db-act')
+
+    render_dashboard()
+
+
+def show_history_dialog(num_atendimento, desdobramento=None):
+    hist = fetch_history(num_atendimento, desdobramento)
+
+    # ordenar por DataIteracao asc e HoraIteracao asc quando possível
+    def _make_dt(h):
+        try:
+            d = h.get("DataIteracao")
+            t = h.get("HoraIteracao")
+            # se já for datetime
+            if isinstance(d, datetime):
+                date_part = d
+            else:
+                # tentar converter string para date
+                try:
+                    date_part = datetime.strptime(str(d), "%Y-%m-%d")
+                except Exception:
+                    try:
+                        date_part = datetime.strptime(str(d), "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        date_part = datetime.min
+            # hora pode ser string hh:mm:ss
+            if t:
+                try:
+                    if isinstance(t, str):
+                        time_part = datetime.strptime(t, "%H:%M:%S").time()
+                    else:
+                        time_part = t
+                except Exception:
+                    time_part = None
+            else:
+                time_part = None
+            if time_part:
+                return datetime.combine(date_part.date(), time_part)
+            return date_part
+        except Exception:
+            return datetime.min
+
+    try:
+        # ordenar por DataIteracao/HoraIteracao em ordem decrescente (mais recentes primeiro)
+        hist_sorted = sorted(hist, key=_make_dt, reverse=True)
+    except Exception:
+        hist_sorted = hist
+
+    dlg = ui.dialog()
+    with dlg:
+        # centralizar conteúdo do histórico em lista com largura limitada
+        with ui.row().classes("w-full justify-center"):
+            with ui.column().classes("w-full max-w-4xl"):
+                # título removido pelo usuário: não exibir label de cabeçalho
+                for h in hist_sorted:
+                    usuario = sanitize_text(h.get("NomeUsuario") or "-")
+                    texto = sanitize_text(limpar_rtf(h.get("TextoIteracao") or ""))
+
+                    def _format_dt(d, t):
+                        # tenta montar um datetime a partir de DataIteracao (data) e HoraIteracao (hora)
+                        # lida com casos em que HoraIteracao vem como
+                        # '1900-01-01 12:50:52' e DataIteracao como
+                        # '2025-10-17 00:00:00'
+                        try:
+                            # parse da parte de data
+                            date_part = None
+                            if isinstance(d, datetime):
+                                date_part = d
+                            else:
+                                s = str(d) if d is not None else ""
+                                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
+                                    try:
+                                        date_part = datetime.strptime(s, fmt)
+                                        break
+                                    except Exception:
+                                        continue
+                            if date_part is None:
+                                date_part = datetime.min
+
+                            # parse da parte de hora — aceitar tanto 'HH:MM:SS' quanto
+                            # um datetime completo com data (ex.: 1900-01-01 12:50:52)
+                            time_part = None
+                            if isinstance(t, datetime):
+                                time_part = t.time()
+                            elif t:
+                                ts = str(t)
+                                for fmt in ("%H:%M:%S", "%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                                    try:
+                                        parsed = datetime.strptime(ts, fmt)
+                                        # se o formato incluiu data, extrair a hora
+                                        time_part = parsed.time()
+                                        break
+                                    except Exception:
+                                        continue
+
+                            # construir datetime final: usar a data de date_part
+                            # e a hora de time_part quando disponível
+                            if time_part:
+                                combined = datetime.combine(date_part.date(), time_part)
+                            else:
+                                combined = date_part
+
+                            # retornar no formato pedido (YYYY-MM-DD HH:MM:SS)
+                            return combined.strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            return f"{sanitize_text(d)} {sanitize_text(t)}"
+
+                    data_str = _format_dt(h.get("DataIteracao"), h.get("HoraIteracao"))
+
+                    # cartão por iteração com labels em negrito
+                    with ui.card().classes("mb-2 p-3 w-full"):
+                        ui.markdown(f"**Data/Hora:** {data_str}  \n\n **Usuário:** {usuario}")
+                        # descrição em markdown (texto limpo)
+                        ui.markdown(texto)
+
+                        # botão Imagem (apenas se houver imagem extraível no TextoIteracao)
+                        rtf_content = h.get("TextoIteracao") or ""
+                        img_exists = False
+                        try:
+                            cached = get_image_flag_for_content(rtf_content)
+                            key = _image_cache_key(rtf_content)
+                            if cached is None:
+                                ib, imime = extract_first_image_from_rtf(rtf_content)
+                                img_exists = bool(ib and imime)
+                                set_image_flag_for_content(rtf_content, img_exists)
+                            else:
+                                img_exists = bool(cached)
+                        except Exception as e:
+                            img_exists = False
+
+                        if img_exists:
+
+                            def _open_history_image(_=None, rtf=rtf_content):
+                                try:
+                                    key = _image_cache_key(rtf)
+                                    cached_now = get_image_flag_for_content(rtf)
+                                except Exception:
+                                    pass
+                                try:
+                                    img_b, mime = extract_first_image_from_rtf(rtf)
+                                except Exception as e:
+                                    img_b, mime = None, None
                                 dlg = ui.dialog()
                                 dlg.classes("w-full max-w-6xl")
                                 with dlg:
-                                    if not rdms:
-                                        ui.label("Nenhuma RDM encontrada").classes("text-sm text-gray-500")
-                                    else:
-                                        # organizar por SituaçãoRDM e dentro por NomeTipoRDM com totalizadores
-                                        from collections import defaultdict
+                                    if img_b and mime:
+                                        key = _image_cache_key(rtf)
+                                        # debug: log expected on-disk path before trying to save
+                                        try:
+                                            ext = _ext_for_mime(mime)
+                                            expected_path = _temp_image_path_for_key(key, ext)
+                                            msg = (
+                                                f"[DEBUG] history will write temp image path={expected_path} "
+                                                f"exists_before={expected_path.exists()} ext={ext}"
+                                            )
+                                            # debug logging removed
+                                        except Exception:
+                                            pass
+                                        url = save_temp_image_and_get_url(key, img_b, mime)
+                                        if url:
+                                            # debug: log that we are inserting an <img> with this URL
+                                            try:
+                                                present = temp_image_exists_on_disk(key)
+                                                import os
 
-                                        situ_map = defaultdict(list)
-                                        for r in rdms:
-                                            key = r.get("SituacaoRDM")
-                                            situ_map[key].append(r)
-
-                                        with ui.row().classes("w-full justify-center"):
-                                            with ui.column().classes("w-full max-w-4xl").style(
-                                                "overflow:auto; height:calc(100vh - 160px); padding-right:8px;"
-                                            ):
-                                                # para cada situação mostrar total e depois total por tipo
-                                                for situ_key in sorted(situ_map.keys(), key=lambda x: str(x)):
-                                                    group = situ_map[situ_key]
-                                                    situ_label = sanitize_text(str(situ_key) if situ_key is not None else "")
-                                                    total_sit = len(group)
-                                                    ui.label(f"{situ_label}: {total_sit}").classes('text-sm font-semibold mt-2 mb-1')
-
-                                                    # agrupar por tipo de RDM
-                                                    type_map = defaultdict(list)
-                                                    for r in group:
-                                                        t = r.get("NomeTipoRDM") or ""
-                                                        type_map[t].append(r)
-
-                                                    for tname in sorted(type_map.keys()):
-                                                        entries = type_map[tname]
-                                                        cnt = len(entries)
-                                                        t_display = sanitize_text(str(tname)) if tname is not None else ""
-                                                        # mostrar total por tipo (badge-like)
-                                                        ui.label(f"{t_display}: {cnt}").style('background:#6b7280;color:#ffffff;padding:4px 8px;border-radius:6px;').classes('text-sm font-medium ml-0 mt-0')
-
-                                                        # listar cada RDM do tipo
-                                                        for r in entries:
-                                                            numrdm = sanitize_text(r.get("IdRdm") or "")
-                                                            desdob_raw = r.get("Desdobramento")
-                                                            desdob = sanitize_text(str(desdob_raw) if desdob_raw is not None else "")
-                                                            tipordm = sanitize_text(r.get("NomeTipoRDM") or "")
-                                                            situ = sanitize_text(r.get("SituacaoRDM") or "")
-                                                            reg = r.get("RegInclusao")
-                                                            data_str = _format_datetime(reg)
-                                                            desc = sanitize_text(r.get("Descricao") or "")
-                                                            md = (
-                                                                f"**Nº:** {numrdm} / {desdob}\n\n"
-                                                                f"**Tipo de RDM:** {tipordm}\n\n"
-                                                                f"**Situação:** {situ}\n\n"
-                                                                f"**Abertura:** {data_str}\n\n"
-                                                                f"**Descrição:** {desc}"
-                                                            )
-                                                            # card RDM: aplicar estilos para forçar quebra de linha e evitar overflow
-                                                            # (longas URLs ou strings sem espaços podem vazar do fundo branco)
-                                                            with ui.card().classes("mb-2 p-3 w-full").style(
-                                                                "background:#ffffff;color:#000000;"
-                                                            ):
-                                                                # garantir que o conteúdo quebre linhas e seja legível
-                                                                ui.markdown(md).style(
-                                                                    "white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; max-width:100%;"
-                                                                )
-                                    with ui.row().classes("w-full mt-4 justify-center"):
-                                        ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes("primary")
-                                dlg.open()
-
-                            ui.button("RDMs", on_click=_show_rdms_local).classes("secondary")
-
-                            # imagem: verificar se existe imagem antes de habilitar o botão
-                            def _open_image_dialog_local(_, rtf=texto_raw):
-                                img_bytes, mime = extract_first_image_from_rtf(rtf)
-                                dlg = ui.dialog()
-                                with dlg:
-                                    if img_bytes and mime:
-                                        b64 = base64.b64encode(img_bytes).decode()
-                                        ui.image(f"data:{mime};base64,{b64}").style(IMG_STYLE)
+                                                msg = (
+                                                    "[DEBUG] creating ui.image: pid="
+                                                    f"{os.getpid()} for key={key} url={url} "
+                                                    f"present_on_disk={present}"
+                                                )
+                                                # debug print removed
+                                            except Exception:
+                                                pass
+                                            # Use relative URL to avoid cross-host issues
+                                            # so the browser requests the same host/port
+                                            rel_url = url  # already starts with '/_temp_img/'
+                                            img_html = f'<img src="{rel_url}" style="{IMG_STYLE}">'
+                                            ui.html(img_html, sanitize=False)
+                                            link_html = (
+                                                f'<div style="margin-top:8px;">'
+                                                f'<a href="{rel_url}" target="_blank" rel="noopener" '
+                                                f'style="color:#ffd700; text-decoration:underline;">'
+                                                'Abrir imagem em nova aba</a></div>'
+                                            )
+                                            ui.html(link_html, sanitize=False)
+                                        else:
+                                            # fallback para data-uri caso gravação falhe
+                                            b64 = base64.b64encode(img_b).decode()
+                                            data_img_html = (
+                                                f'<img src="data:{mime};base64,{b64}" '
+                                                f'style="{IMG_STYLE}">'
+                                            )
+                                            ui.html(data_img_html, sanitize=False)
                                     else:
                                         ui.label("[Imagem] — não foi possível extrair a imagem").classes(
                                             "text-sm text-gray-600"
                                         )
                                     with ui.row().classes("w-full justify-end gap-2"):
-                                        ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes("secondary")
+                                        ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes(
+                                            "secondary"
+                                        )
                                 dlg.open()
 
-                            # detectar rapidamente se há imagem extraível para habilitar o botão
-                            img_available = False
-                            try:
-                                cached = get_image_flag_for_content(texto_raw)
-                                key = _image_cache_key(texto_raw)
-                                if cached is None:
-                                    try_img, try_mime = extract_first_image_from_rtf(texto_raw)
-                                    img_available = bool(try_img and try_mime)
-                                    # debug prints removed
-                                    # gravar no cache booleano
-                                    set_image_flag_for_content(texto_raw, img_available)
-                                else:
-                                    img_available = bool(cached)
-                            except Exception as e:
-                                img_available = False
-
-                            # mostrar apenas o botão "Imagem" quando de fato há uma imagem extraível
-                            if img_available:
-                                ui.button("Imagem", on_click=_open_image_dialog_local).classes("secondary")
-
-                            # botão Atendimentos: abre diálogo com totalização e lista agrupada
-                            def _show_atendimentos_local(_=None, c=card):
-                                try:
-                                    # tentar obter o código do cliente a partir do card
-                                    cod_cliente = (
-                                        c.get('CodCliente')
-                                        or c.get('CodigoCliente')
-                                        or c.get('CodCli')
-                                        or c.get('CodClienteCliente')
-                                    )
-                                except Exception:
-                                    cod_cliente = None
-
-                                if not cod_cliente:
-                                    ui.notify('Código do cliente não disponível para este card', color='warning')
-                                    return
-
-                                rows = fetch_atendimentos_por_cliente(cod_cliente) or []
-                                total = len(rows)
-
-                                # agrupar por situacao e por NomeTipoAtendimento
-                                from collections import defaultdict
-
-                                situ_groups = defaultdict(list)
-                                for r in rows:
-                                    try:
-                                        s = r.get('Situacao')
-                                        s_val = int(s) if s is not None else None
-                                    except Exception:
-                                        try:
-                                            s_val = int(str(r.get('Situacao')))
-                                        except Exception:
-                                            s_val = None
-                                    situ_groups[s_val].append(r)
-
-                                dlg = ui.dialog()
-                                dlg.classes('w-full')
-                                # centralizar um único card branco com largura máxima
-                                with dlg:
-                                    with ui.row().classes('w-full justify-center'):
-                                        with ui.column().classes('w-full max-w-3xl'):
-                                            # card branco com espaçamento interno
-                                            with ui.card().classes('p-3').style('background:#ffffff;color:#000000;line-height:1.1;'):
-                                                # título removido para layout compacto
-                                                ui.label(f"Total de atendimentos: {total}").style('background:#7f1d1d;color:#ffffff;padding:4px;border-radius:6px;').classes('text-sm font-semibold mb-0')
-
-                                                # resumo por situação (cada item em sua linha)
-                                                aberto_count = len(situ_groups.get(0, []))
-                                                concluido_count = len(situ_groups.get(1, []))
-                                                ui.label(f"Em aberto: {aberto_count}").classes('text-sm mb-0')
-                                                ui.label(f"Concluídos: {concluido_count}").classes('text-sm mb-0')
-
-                                                # listar detalhes por grupo (0 = aberto, 1 = concluído)
-                                                for situ_code, situ_label in ((0, 'Em aberto'), (1, 'Concluídos')):
-                                                    group = situ_groups.get(situ_code, [])
-                                                    ui.label(f"{situ_label}: {len(group)}").classes('text-sm font-semibold mt-1 mb-0')
-                                                    if not group:
-                                                        continue
-
-                                                    # agrupar por NomeTipoAtendimento
-                                                    type_map = defaultdict(list)
-                                                    for r in group:
-                                                        t = r.get('NomeTipoAtendimento') or ''
-                                                        type_map[t].append(r)
-
-                                                    for tname in sorted(type_map.keys()):
-                                                        entries = type_map[tname]
-                                                        count = len(entries)
-                                                        t_display = sanitize_text(str(tname)) if tname is not None else ''
-                                                        ui.label(f"{t_display}: {count}").style('background:#6b7280;color:#ffffff;padding:4px 8px;border-radius:6px;').classes('text-sm font-semibold ml-0 mt-0')
-                                                        for r in entries:
-                                                            numa = sanitize_text(str(r.get('NumAtendimento') or ''))
-                                                            desd_raw = r.get('Desdobramento')
-                                                            desd = sanitize_text(str(desd_raw) if desd_raw is not None else '')
-                                                            assunto = sanitize_text(str(r.get('AssuntoAtendimento') or ''))
-                                                            # cada atendimento em linha própria
-                                                            ui.label(f"{numa}/{desd} — {assunto}").classes('text-sm ml-2 mb-0')
-
-                                                # botão fechar centralizado abaixo (menos espaço)
-                                                with ui.row().classes('w-full justify-center mt-2'):
-                                                    ui.button('Fechar [ESC]', on_click=lambda _=None: dlg.close()).classes('primary')
-
-                                dlg.open()
-
-                            ui.button('Atendimentos', on_click=_show_atendimentos_local).classes('secondary')
-
-                            # mover (desativado)
-                            # O código de moção foi comentado conforme solicitado. Mantemos um
-                            # placeholder informativo no UI para indicar que a funcionalidade
-                            # está desativada.
-                            #
-                            # Código original (seleção de coluna e botão 'Mover'):
-                            # options = [name for (name, _, _) in COLUMNS]
-                            # sel = ui.select(options, value=col_name).classes("w-full")
-                            # def do_move(...):
-                            #     ...
-                            # btn_move = ui.button("Mover", on_click=do_move)
-                            #
-                            # Em vez disso, exibir label informativa.
-                            #ui.label("Movimentação desativada").classes('text-sm text-gray-500')
-
-    def show_history_dialog(num_atendimento, desdobramento=None):
-        hist = fetch_history(num_atendimento, desdobramento)
-
-        # ordenar por DataIteracao asc e HoraIteracao asc quando possível
-        def _make_dt(h):
-            try:
-                d = h.get("DataIteracao")
-                t = h.get("HoraIteracao")
-                # se já for datetime
-                if isinstance(d, datetime):
-                    date_part = d
-                else:
-                    # tentar converter string para date
-                    try:
-                        date_part = datetime.strptime(str(d), "%Y-%m-%d")
-                    except Exception:
-                        try:
-                            date_part = datetime.strptime(str(d), "%Y-%m-%d %H:%M:%S")
-                        except Exception:
-                            date_part = datetime.min
-                # hora pode ser string hh:mm:ss
-                if t:
-                    try:
-                        if isinstance(t, str):
-                            time_part = datetime.strptime(t, "%H:%M:%S").time()
-                        else:
-                            time_part = t
-                    except Exception:
-                        time_part = None
-                else:
-                    time_part = None
-                if time_part:
-                    return datetime.combine(date_part.date(), time_part)
-                return date_part
-            except Exception:
-                return datetime.min
-
-        try:
-            # ordenar por DataIteracao/HoraIteracao em ordem decrescente (mais recentes primeiro)
-            hist_sorted = sorted(hist, key=_make_dt, reverse=True)
-        except Exception:
-            hist_sorted = hist
-
-        dlg = ui.dialog()
-        with dlg:
-            # centralizar conteúdo do histórico em lista com largura limitada
-            with ui.row().classes("w-full justify-center"):
-                with ui.column().classes("w-full max-w-4xl"):
-                    # título removido pelo usuário: não exibir label de cabeçalho
-                    for h in hist_sorted:
-                        usuario = sanitize_text(h.get("NomeUsuario") or "-")
-                        texto = sanitize_text(limpar_rtf(h.get("TextoIteracao") or ""))
-
-                        def _format_dt(d, t):
-                            # tenta montar um datetime a partir de DataIteracao (data) e HoraIteracao (hora)
-                            # lida com casos em que HoraIteracao vem como
-                            # '1900-01-01 12:50:52' e DataIteracao como
-                            # '2025-10-17 00:00:00'
-                            try:
-                                # parse da parte de data
-                                date_part = None
-                                if isinstance(d, datetime):
-                                    date_part = d
-                                else:
-                                    s = str(d) if d is not None else ""
-                                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y"):
-                                        try:
-                                            date_part = datetime.strptime(s, fmt)
-                                            break
-                                        except Exception:
-                                            continue
-                                if date_part is None:
-                                    date_part = datetime.min
-
-                                # parse da parte de hora — aceitar tanto 'HH:MM:SS' quanto
-                                # um datetime completo com data (ex.: 1900-01-01 12:50:52)
-                                time_part = None
-                                if isinstance(t, datetime):
-                                    time_part = t.time()
-                                elif t:
-                                    ts = str(t)
-                                    for fmt in ("%H:%M:%S", "%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-                                        try:
-                                            parsed = datetime.strptime(ts, fmt)
-                                            # se o formato incluiu data, extrair a hora
-                                            time_part = parsed.time()
-                                            break
-                                        except Exception:
-                                            continue
-
-                                # construir datetime final: usar a data de date_part
-                                # e a hora de time_part quando disponível
-                                if time_part:
-                                    combined = datetime.combine(date_part.date(), time_part)
-                                else:
-                                    combined = date_part
-
-                                # retornar no formato pedido (YYYY-MM-DD HH:MM:SS)
-                                return combined.strftime("%Y-%m-%d %H:%M:%S")
-                            except Exception:
-                                return f"{sanitize_text(d)} {sanitize_text(t)}"
-
-                        data_str = _format_dt(h.get("DataIteracao"), h.get("HoraIteracao"))
-
-                        # cartão por iteração com labels em negrito
-                        with ui.card().classes("mb-2 p-3 w-full"):
-                            ui.markdown(f"**Data/Hora:** {data_str}  \n\n **Usuário:** {usuario}")
-                            # descrição em markdown (texto limpo)
-                            ui.markdown(texto)
-
-                            # botão Imagem (apenas se houver imagem extraível no TextoIteracao)
-                            rtf_content = h.get("TextoIteracao") or ""
-                            img_exists = False
-                            try:
-                                cached = get_image_flag_for_content(rtf_content)
-                                key = _image_cache_key(rtf_content)
-                                if cached is None:
-                                    ib, imime = extract_first_image_from_rtf(rtf_content)
-                                    img_exists = bool(ib and imime)
-                                    set_image_flag_for_content(rtf_content, img_exists)
-                                else:
-                                    img_exists = bool(cached)
-                            except Exception as e:
-                                img_exists = False
-
-                            if img_exists:
-
-                                def _open_history_image(_=None, rtf=rtf_content):
-                                    try:
-                                        key = _image_cache_key(rtf)
-                                        cached_now = get_image_flag_for_content(rtf)
-                                    except Exception:
-                                        pass
-                                    try:
-                                        img_b, mime = extract_first_image_from_rtf(rtf)
-                                    except Exception as e:
-                                        img_b, mime = None, None
-                                    dlg = ui.dialog()
-                                    dlg.classes("w-full max-w-6xl")
-                                    with dlg:
-                                        if img_b and mime:
-                                            key = _image_cache_key(rtf)
-                                            # debug: log expected on-disk path before trying to save
-                                            try:
-                                                ext = _ext_for_mime(mime)
-                                                expected_path = _temp_image_path_for_key(key, ext)
-                                                msg = (
-                                                    f"[DEBUG] history will write temp image path={expected_path} "
-                                                    f"exists_before={expected_path.exists()} ext={ext}"
-                                                )
-                                                # debug logging removed
-                                            except Exception:
-                                                pass
-                                            url = save_temp_image_and_get_url(key, img_b, mime)
-                                            if url:
-                                                # debug: log that we are inserting an <img> with this URL
-                                                try:
-                                                    present = temp_image_exists_on_disk(key)
-                                                    import os
-
-                                                    msg = (
-                                                        "[DEBUG] creating ui.image: pid="
-                                                        f"{os.getpid()} for key={key} url={url} "
-                                                        f"present_on_disk={present}"
-                                                    )
-                                                    # debug print removed
-                                                except Exception:
-                                                    pass
-                                                # Use relative URL to avoid cross-host issues
-                                                # so the browser requests the same host/port
-                                                rel_url = url  # already starts with '/_temp_img/'
-                                                img_html = f'<img src="{rel_url}" style="{IMG_STYLE}">'
-                                                ui.html(img_html, sanitize=False)
-                                                link_html = (
-                                                    f'<div style="margin-top:8px;">'
-                                                    f'<a href="{rel_url}" target="_blank" rel="noopener" '
-                                                    f'style="color:#ffd700; text-decoration:underline;">'
-                                                    'Abrir imagem em nova aba</a></div>'
-                                                )
-                                                ui.html(link_html, sanitize=False)
-                                            else:
-                                                # fallback para data-uri caso gravação falhe
-                                                b64 = base64.b64encode(img_b).decode()
-                                                data_img_html = (
-                                                    f'<img src="data:{mime};base64,{b64}" '
-                                                    f'style="{IMG_STYLE}">'
-                                                )
-                                                ui.html(data_img_html, sanitize=False)
-                                        else:
-                                            ui.label("[Imagem] — não foi possível extrair a imagem").classes(
-                                                "text-sm text-gray-600"
-                                            )
-                                        with ui.row().classes("w-full justify-end gap-2"):
-                                            ui.button("Fechar [ESC]", on_click=lambda _=None: dlg.close()).classes(
-                                                "secondary"
-                                            )
-                                    dlg.open()
-
-                                ui.button("Imagem", on_click=_open_history_image).classes("secondary")
-                    # botão fechar centralizado
-                    with ui.row().classes("w-full justify-center mt-4"):
-                        ui.button("Fechar [ESC]", on_click=lambda _: dlg.close()).classes("primary")
+                            ui.button("Imagem", on_click=_open_history_image).classes("secondary")
+                # botão fechar centralizado
+                with ui.row().classes("w-full justify-center mt-4"):
+                    ui.button("Fechar [ESC]", on_click=lambda _: dlg.close()).classes("primary")
         dlg.open()
-
-    render_board()
 
 
 # ---------- Execução ----------
