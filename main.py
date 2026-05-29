@@ -18,7 +18,7 @@ from starlette.responses import Response
 
 from authentication import get_db_connection, verify_user
 from rtf_utils import extract_first_image_from_rtf, limpar_rtf
-from nicegui import ui
+from nicegui import ui, app
 from version import APP_NAME, APP_VERSION
 
 # estilo reutilizável para imagens exibidas em diálogos (mantém linhas curtas)
@@ -1016,6 +1016,9 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
     except Exception:
         pass
 
+    # servir pasta assets como estáticos
+    app.add_static_files('/assets', Path(__file__).parent / 'assets')
+
     # mostrar view inicial (login)
     show_login()
 
@@ -1025,41 +1028,133 @@ def start_app(host: str = "0.0.0.0", port: int = 8080):
 
 def show_login():
     global root
-    # root pode ter sido removido pelo contexto do NiceGUI (por exemplo após reload);
-    # limpar de forma segura: se root.clear() falhar, recriamos o elemento root.
     try:
         if root is None:
             raise RuntimeError("root not initialized")
         root.clear()
     except Exception:
-        # criar um container apropriado (ui.column) no contexto atual
         root = ui.column().classes("w-full p-4")
 
     with root:
-        # centralizar o formulário de login
-        # centralizar horizontal e verticalmente (ocupando a altura da viewport)
-        with ui.row().classes("w-full h-screen items-center justify-center"):
-            with ui.column().classes("items-center w-full max-w-sm gap-2"):
-                # cartão com fundo e sombra ao redor do formulário para destaque
-                with ui.card().classes("w-full p-6 rounded shadow-md").style("background:#ffffff;"):
-                    ui.markdown(f"## {APP_NAME}").classes("text-center")
-                    # inputs responsivos para caberem dentro do cartão
-                    username = ui.input("Usuário").classes("w-full").props("autofocus")
-                    password = ui.input("Senha", password=True).classes("w-full")
-                    message = ui.label("").classes("text-sm text-red-600")
+        # ── estilos exclusivos da tela de login ──────────────────────────
+        ui.html("""<style>
+          body { margin:0; }
+          .login-bg {
+            min-height: 100vh;
+            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0f172a 100%);
+            display: flex; align-items: center; justify-content: center;
+          }
+          .login-card {
+            background: rgba(255,255,255,0.97);
+            border-radius: 18px;
+            box-shadow: 0 24px 60px rgba(0,0,0,.40), 0 4px 16px rgba(0,0,0,.20);
+            padding: 44px 40px 36px;
+            width: 100%;
+            max-width: 400px;
+          }
+          .login-logo {
+            width: 64px; height: 64px; border-radius: 14px;
+            background: linear-gradient(135deg, #1d4ed8, #0ea5e9);
+            display: flex; align-items: center; justify-content: center;
+            margin: 0 auto 20px;
+            box-shadow: 0 4px 16px rgba(14,165,233,.40);
+            font-size: 2rem;
+          }
+          .login-title {
+            font-size: 1.35rem; font-weight: 700; color: #0f172a;
+            text-align: center; margin-bottom: 4px; letter-spacing: -.3px;
+          }
+          .login-sub {
+            font-size: .82rem; color: #64748b; text-align: center;
+            margin-bottom: 28px;
+          }
+          .login-divider {
+            border: none; border-top: 1px solid #e2e8f0; margin: 20px 0;
+          }
+          .login-btn {
+            width: 100% !important;
+            height: 46px !important;
+            background: linear-gradient(135deg, #1d4ed8, #0ea5e9) !important;
+            color: #fff !important;
+            font-size: .95rem !important;
+            font-weight: 600 !important;
+            border-radius: 10px !important;
+            border: none !important;
+            box-shadow: 0 4px 14px rgba(14,165,233,.35) !important;
+            transition: opacity .15s !important;
+            letter-spacing: .3px;
+          }
+          .login-btn:hover { opacity: .88 !important; }
+          .login-error {
+            background: #fef2f2; border: 1px solid #fecaca; border-radius: 8px;
+            padding: 9px 14px; color: #b91c1c; font-size: .82rem;
+            font-weight: 500; text-align: center; margin-top: 10px;
+            display: none;
+          }
+          .login-error.visible { display: block; }
+          .login-version {
+            text-align: center; font-size: .72rem; color: #94a3b8; margin-top: 18px;
+          }
+          /* campos NiceGUI dentro do login */
+          .login-card .q-field { margin-bottom: 14px; }
+          .login-card .q-field__control { border-radius: 9px !important; }
+        </style>""", sanitize=False)
 
-                    def do_login():
-                        user = verify_user(username.value, password.value)
-                        if user:
-                            logged_user.update(user)
-                            ui.notify(f"Bem-vindo, {user['NomeUsuario']}!")
-                            show_kanban()
-                        else:
-                            message.set_text("Usuário ou senha inválidos")
+        with ui.element('div').classes('login-bg'):
+            with ui.element('div').classes('login-card'):
+                # logo
+                ui.html(
+                    '<div class="login-logo">'
+                    '<img src="/assets/logo.png" alt="logo" style="width:44px;height:44px;object-fit:contain;">'
+                    '</div>',
+                    sanitize=False)
+                # título
+                ui.html(
+                    '<div class="login-title">CEOSoftware</div>'
+                    '<div class="login-sub">Painel de Implantações — acesso restrito</div>',
+                    sanitize=False)
+                # separador
+                ui.html('<hr class="login-divider">', sanitize=False)
 
-                    # centraliza o botão dentro do cartão
-                    with ui.row().classes("w-full justify-center mt-2"):
-                        ui.button("Entrar", on_click=lambda _: do_login()).classes("primary")
+                # campos
+                username = (
+                    ui.input(label='Usuário', placeholder='Digite seu usuário')
+                    .classes('w-full')
+                    .props('outlined dense autofocus clearable')
+                )
+                password = (
+                    ui.input(label='Senha', placeholder='••••••••', password=True, password_toggle_button=True)
+                    .classes('w-full')
+                    .props('outlined dense')
+                )
+
+                # mensagem de erro (oculta inicialmente)
+                error_box = ui.html(
+                    '<div class="login-error" id="login-error">Usuário ou senha inválidos. Tente novamente.</div>',
+                    sanitize=False)
+
+                def do_login():
+                    user = verify_user(username.value, password.value)
+                    if user:
+                        logged_user.update(user)
+                        ui.notify(f"Bem-vindo, {user['NomeUsuario']}!", type='positive', position='top')
+                        show_kanban()
+                    else:
+                        error_box.set_content(
+                            '<div class="login-error visible" id="login-error">'
+                            '⚠️ Usuário ou senha inválidos. Tente novamente.</div>')
+
+                password.on('keydown.enter', lambda _: do_login())
+                username.on('keydown.enter', lambda _: do_login())
+
+                # botão entrar
+                ui.html('<div style="margin-top:6px;"></div>', sanitize=False)
+                ui.button('Entrar', on_click=lambda _: do_login()).classes('login-btn')
+
+                # versão
+                ui.html(
+                    f'<div class="login-version" style="margin-top:32px;">v{APP_VERSION}</div>',
+                    sanitize=False)
     # footer já criado no nível do módulo
 
 
@@ -1353,7 +1448,7 @@ def show_kanban():
         dashboard_col = ui.column().classes('w-full').style('gap:0; padding:0 16px 24px 16px;')
 
     # ── estado do filtro ativo ─────────────────────────────────────────────
-    active_filter = {'cliente': '', 'usuario': ''}
+    active_filter = {'cliente': '', 'usuario': '', 'contato_hoje': False}
 
     # ── helpers de data ────────────────────────────────────────────────────
     def _parse_dt(v):
@@ -1399,7 +1494,7 @@ def show_kanban():
     def _clear_filter(_=None):
         filter_cliente.set_value('')
         filter_usuario.set_value('')
-        active_filter.update({'cliente': '', 'usuario': ''})
+        active_filter.update({'cliente': '', 'usuario': '', 'contato_hoje': False})
         filter_count_label.set_text('')
         render_dashboard()
 
@@ -1410,6 +1505,7 @@ def show_kanban():
     def render_dashboard(cols_to_update=None):
         fc = active_filter.get('cliente', '')
         fu = active_filter.get('usuario', '')
+        fch = active_filter.get('contato_hoje', False)
         hoje = datetime.now().date()
 
         # filtrar por coluna
@@ -1419,7 +1515,11 @@ def show_kanban():
             raw = column_cards.get(col_name, []) or []
             filt = [c for c in raw
                     if (not fc or fc in sanitize_text(c.get('NomeCliente') or '').lower())
-                    and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())]
+                    and (not fu or fu in sanitize_text(c.get('NomeUsuario') or '').lower())
+                    and (not fch or (
+                        (dt := _parse_dt(c.get('DataProxContato'))) is not None
+                        and dt.date() == hoje
+                    ))]
             col_filtered[col_name] = (filt, col_color)
             all_cards.extend(filt)
 
@@ -1457,12 +1557,29 @@ def show_kanban():
                 for icon, label, val, bg, fg in [
                     ('📋', 'Total ativo',      str(total_geral), '#dbeafe', '#1e40af'),
                     ('🔴', 'Em atraso >120d',  str(n_atrasados), '#fee2e2', '#b91c1c'),
-                    ('📅', 'Contato hoje',      str(n_prox_hoje), '#fef9c3', '#854d0e'),
                 ]:
                     ui.html(
                         f'<div class="db-kpi" style="background:{bg};border-color:{bg};">'
                         f'<div style="font-size:.68rem;font-weight:600;color:{fg};margin-bottom:4px;">{icon} {label}</div>'
                         f'<div style="font-size:1.6rem;font-weight:700;color:{fg};">{val}</div></div>',
+                        sanitize=False)
+                # KPI Contato hoje – clicável (toggle filtro)
+                _fch_active = active_filter.get('contato_hoje', False)
+                _kpi_bg = '#fbbf24' if _fch_active else '#fef9c3'
+                _kpi_border = '#d97706' if _fch_active else '#fef9c3'
+                _kpi_fg = '#78350f'
+                with ui.element('div').style(
+                    f'background:{_kpi_bg};border:2px solid {_kpi_border};border-radius:10px;'
+                    f'padding:14px 20px;text-align:center;min-width:120px;'
+                    f'box-shadow:0 1px 4px rgba(0,0,0,.06);cursor:pointer;'
+                ).on('click', lambda: [
+                    active_filter.update({'contato_hoje': not active_filter.get('contato_hoje', False)}),
+                    render_dashboard()
+                ]):
+                    ui.html(
+                        f'<div style="font-size:.68rem;font-weight:600;color:{_kpi_fg};margin-bottom:4px;">'
+                        f'📅 Contato hoje{" ✕" if _fch_active else ""}</div>'
+                        f'<div style="font-size:1.6rem;font-weight:700;color:{_kpi_fg};">{n_prox_hoje}</div>',
                         sanitize=False)
                 for col_name, col_color, _ in COLUMNS:
                     cnt = len(col_filtered[col_name][0])
