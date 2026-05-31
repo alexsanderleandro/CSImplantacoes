@@ -1547,9 +1547,8 @@ def show_kanban():
                         and dt.date() == hoje
                     ))
                     and (not fat or (
-                        (_days_since(c.get('Abertura')) or 0) > 120
-                        and not (_parse_dt(c.get('DataProxContato')) is not None
-                                 and _parse_dt(c.get('DataProxContato')).date() == hoje)
+                        (dt_fat := _parse_dt(c.get('DataProxContato'))) is not None
+                        and dt_fat.date() < hoje
                     ))]
             col_filtered[col_name] = (filt, col_color)
             all_cards.extend(filt)
@@ -1557,9 +1556,8 @@ def show_kanban():
         total_geral = len(all_cards)
         n_atrasados = sum(
             1 for c in all_cards
-            if (_days_since(c.get('Abertura')) or 0) > 120
-            and not (_parse_dt(c.get('DataProxContato')) is not None
-                     and _parse_dt(c.get('DataProxContato')).date() == hoje)
+            if (dt_at := _parse_dt(c.get('DataProxContato'))) is not None
+            and dt_at.date() < hoje
         )
         n_prox_hoje = sum(
             1 for c in all_cards
@@ -1707,14 +1705,14 @@ def show_kanban():
                                 f'<span style="font-size:.78rem;color:{prox_clr};">'
                                 f'{prox_icon} {prox_str}</span>',
                                 sanitize=False)
-                            # alertas
-                            if atrasado:
+                            # alertas – atraso baseado na data de próximo contato
+                            if prox_vencida:
                                 ui.html(
                                     '<span class="db-chip" style="background:#fee2e2;color:#b91c1c;">⚠ Atraso</span>',
                                     sanitize=False)
-                            if prox_vencida:
+                            else:
                                 ui.html(
-                                    '<span class="db-chip" style="background:#fef9c3;color:#854d0e;">📞 Vencido</span>',
+                                    '<span class="db-chip" style="background:#dcfce7;color:#15803d;">✅ Em dia</span>',
                                     sanitize=False)
 
                             # ── botões de ação ────────────────────────────
