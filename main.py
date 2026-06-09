@@ -253,6 +253,7 @@ COLUMNS = [
     ("Visita pré-implantação",    "#fdcdac", 101),  # Pastel2[1] pêssego
     ("Instalação do sistema",     "#cbd5e8", 102),  # Pastel2[2] azul acinzentado
     ("Implantação em andamento",  "#f4cae4", 103),  # Pastel2[3] rosa
+    ("Implantação - em produção monitorada", "#ccebc5", 52), # Pastel2[6] verde claro (novo)
     ("Aguardando RDM",            "#e6f5c9", 51),   # Pastel2[4] verde claro
     ("Implantação pausada",       "#fff2ae", 104),  # Pastel2[5] amarelo
     ("Implantação cancelada",     "#f1e2cc", 105),  # Pastel2[6] bege
@@ -296,7 +297,7 @@ INNER JOIN Usuarios U WITH (NOLOCK)
 LEFT JOIN GrupoEmpresa G WITH (NOLOCK)
     ON C.CodGrupoEmpresa = G.CodGrupoEmpresa
 WHERE
-    A.CodClassificacaoAtendimento IN (7, 46, 29, 47, 51, 48, 49, 8)
+    A.CodClassificacaoAtendimento IN (7, 46, 29, 47, 51, 48, 49, 8, 52)
     AND A.Situacao = 0
     --AND A.Desdobramento = 0  
 ORDER BY
@@ -1409,9 +1410,7 @@ def show_kanban():
                         f"📋 {len(cards_data)} cards</span>",
                         sanitize=False,
                     )
-                    ui.button('🔄 Atualizar', on_click=_do_refresh).classes('text-sm font-semibold text-white').style(
-                        'background:#059669;border-radius:6px;padding:5px 14px;'
-                    )
+
                     ui.button('🏁 Concluídas', on_click=_open_implantacoes_dialog).classes('text-sm font-semibold text-white').style(
                         'background:#dc2626;border-radius:6px;padding:5px 14px;'
                     )
@@ -1448,7 +1447,7 @@ def show_kanban():
     # ── distribuir cards iniciais ─────────────────────────────────────────
     _CLASS_TO_COL = {
         7: 'A iniciar', 46: 'Visita pré-implantação', 29: 'Instalação do sistema',
-        47: 'Implantação em andamento', 51: 'Aguardando RDM',
+        47: 'Implantação em andamento', 52: 'Implantação - em produção monitorada', 51: 'Aguardando RDM',
         48: 'Implantação pausada', 49: 'Implantação cancelada', 8: 'Visita pós-implantação',
     }
     for _row in cards_data:
@@ -1640,11 +1639,12 @@ def show_kanban():
                         sanitize=False)
 
             # ── grupos por status ────────────────────────────────────────
+            # Adicionar a nova coluna no loop para renderizar os KPIs e os grupos de cards
             for col_name, col_color, _ in COLUMNS:
                 cards_in_col, _ = col_filtered[col_name]
                 cards_sorted = sorted(
                     cards_in_col,
-                    key=lambda c: (_days_since(c.get('Abertura')) or 0),
+                    key=lambda c: (_days_since(c.get("Abertura")) or 0),
                     reverse=True
                 )
                 with ui.expansion(
